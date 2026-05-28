@@ -6,28 +6,43 @@ import {
 } from '../constants';
 import { Question, getRandomQuestion, resetQuestionPool } from '../data/questions';
 
-// =====================================================
-// ⚔️ GAME SCENE — Beat-em-up con quiz ICFES
-// =====================================================
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚔️  GAME SCENE — Beat-em-up quiz ICFES  v3.0
+//     + Hit-freeze · SFX · Telegrafía · Soul bar · Reliquias · Boss fases
+//     + English Rank · Dodge roll · Word echo
+// ═══════════════════════════════════════════════════════════════════════════════
 
 type AttackType = 'light' | 'heavy' | 'special';
+type GameState  = 'idle' | 'questioning' | 'feedback' | 'shooting'
+                | 'wave_clear' | 'game_over' | 'relic_pick';
 
-const P_GRAVITY     = 900;
-const P_MOVE_SPEED  = 230;
-const P_JUMP_VEL    = -460;
-const P_DASH_SPEED  = 580;
-const P_DASH_MS     = 170;
-const P_DASH_CD_MS  = 900;
-const E_CHASE_RANGE = 180;
-const E_MELEE_RANGE = 65;
+// ── Física ────────────────────────────────────────────────────────────────────
+const P_GRAVITY      = 900;
+const P_MOVE_SPEED   = 230;
+const P_JUMP_VEL     = -460;
+const P_DASH_SPEED   = 580;
+const P_DASH_MS      = 170;
+const P_DASH_CD_MS   = 900;
+const P_DODGE_SPEED  = 310;
+const P_DODGE_MS     = 260;
+const P_DODGE_CD_MS  = 1100;
+const P_IFRAME_MS    = 380;          // ms de invencibilidad en dodge
 
-// Panel de pregunta: sheet anclado al fondo, full width
-const Q_PH = 200;                    // altura del panel
-const Q_PY = GH - Q_PH / 2;         // = 380 — centro vertical del panel
+// ── Enemigos ──────────────────────────────────────────────────────────────────
+const E_CHASE_RANGE  = 180;
+const E_MELEE_RANGE  = 65;
+const E_WARN_RANGE   = 115;          // telegrafía antes de melee
 
-// ─────────────────────────────────────────────────────────────────────────
-type GameState = 'idle' | 'questioning' | 'feedback' | 'shooting' | 'wave_clear' | 'game_over';
+// ── Pregunta ──────────────────────────────────────────────────────────────────
+const Q_PH = 200;
+const Q_PY = GH - Q_PH / 2;
 
+// ── Alma ──────────────────────────────────────────────────────────────────────
+const SOUL_MAX      = 100;
+const SOUL_CHARGE   = 22;
+const SOUL_DRAIN    = 40;
+
+// ─────────────────────────────────────────────────────────────────────────────
 interface ActiveEnemy {
   type:      EnemyType;
   sprite:    Phaser.GameObjects.Sprite;
@@ -38,78 +53,107 @@ interface ActiveEnemy {
   hpLabel:   Phaser.GameObjects.Text;
   bob:       Phaser.Tweens.Tween;
   spriteH:   number;
+  warned:    boolean;
 }
 
-const REWARD_LABELS: Record<string, string> = {
-  bullet:  '→ 🔫 +1 DMG',
-  double:  '→ ⚡ +2 DMG',
-  grenade: '→ 💣 KILL',
-  shield:  '→ 🛡️ BLOCK',
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 🌍 BIOMAS — 10 mundos con paletas de color únicas
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Biomas ────────────────────────────────────────────────────────────────────
 interface BiomeConfig {
-  name:   string;
-  icon:   string;
-  bgTint: number;
-  sky:    number;
-  fog:    number;
-  ground: number;
-  pts:    number[];
+  name: string; icon: string; bgTint: number;
+  sky: number; fog: number; ground: number; pts: number[];
 }
-
 const BIOMES: BiomeConfig[] = [
-  { name: 'CEMENTERIO', icon: '⚰️',  bgTint: 0xffffff, sky: 0x28006e, fog: 0x1e0048, ground: 0x00ff44, pts: [0x00ff88, 0x44aaff, 0xbb55ff] },
-  { name: 'BOSQUE',     icon: '🌲',  bgTint: 0x44ff88, sky: 0x004400, fog: 0x002810, ground: 0x44ff44, pts: [0x44ff44, 0x88ff88, 0x22cc22] },
-  { name: 'DESIERTO',   icon: '🌵',  bgTint: 0xffaa44, sky: 0x883300, fog: 0x441800, ground: 0xffaa00, pts: [0xffaa00, 0xff6600, 0xffdd44] },
-  { name: 'CASTILLO',   icon: '🏰',  bgTint: 0xbbbbdd, sky: 0x222244, fog: 0x141430, ground: 0x8888ff, pts: [0x9999ff, 0xccccff, 0x6666cc] },
-  { name: 'VOLCAN',     icon: '🌋',  bgTint: 0xff4422, sky: 0x440000, fog: 0x2e0000, ground: 0xff4400, pts: [0xff2200, 0xff6600, 0xffaa00] },
-  { name: 'TUNDRA',     icon: '❄️',  bgTint: 0x99ddff, sky: 0x002244, fog: 0x001128, ground: 0x44ddff, pts: [0x99ddff, 0xaaeeff, 0x44bbff] },
-  { name: 'PANTANO',    icon: '🌿',  bgTint: 0x44aa33, sky: 0x112200, fog: 0x0a1400, ground: 0x66ee33, pts: [0x66ee33, 0xaaff44, 0x44cc22] },
-  { name: 'ABISMO',     icon: '🕳️', bgTint: 0x220033, sky: 0x0a0016, fog: 0x080012, ground: 0xaa00ff, pts: [0xaa00ff, 0xff00aa, 0x6600aa] },
-  { name: 'COSMOS',     icon: '🌌',  bgTint: 0x3344bb, sky: 0x000033, fog: 0x000028, ground: 0x3366ff, pts: [0x6677ff, 0xaa88ff, 0x3344ff] },
-  { name: 'CAOS',       icon: '💀',  bgTint: 0xff0066, sky: 0x330011, fog: 0x280010, ground: 0xff0088, pts: [0xff0066, 0xff6699, 0xcc0044] },
+  { name:'CEMENTERIO', icon:'⚰️',  bgTint:0xffffff, sky:0x28006e, fog:0x1e0048, ground:0x00ff44, pts:[0x00ff88,0x44aaff,0xbb55ff] },
+  { name:'BOSQUE',     icon:'🌲',  bgTint:0x44ff88, sky:0x004400, fog:0x002810, ground:0x44ff44, pts:[0x44ff44,0x88ff88,0x22cc22] },
+  { name:'DESIERTO',   icon:'🌵',  bgTint:0xffaa44, sky:0x883300, fog:0x441800, ground:0xffaa00, pts:[0xffaa00,0xff6600,0xffdd44] },
+  { name:'CASTILLO',   icon:'🏰',  bgTint:0xbbbbdd, sky:0x222244, fog:0x141430, ground:0x8888ff, pts:[0x9999ff,0xccccff,0x6666cc] },
+  { name:'VOLCAN',     icon:'🌋',  bgTint:0xff4422, sky:0x440000, fog:0x2e0000, ground:0xff4400, pts:[0xff2200,0xff6600,0xffaa00] },
+  { name:'TUNDRA',     icon:'❄️',  bgTint:0x99ddff, sky:0x002244, fog:0x001128, ground:0x44ddff, pts:[0x99ddff,0xaaeeff,0x44bbff] },
+  { name:'PANTANO',    icon:'🌿',  bgTint:0x44aa33, sky:0x112200, fog:0x0a1400, ground:0x66ee33, pts:[0x66ee33,0xaaff44,0x44cc22] },
+  { name:'ABISMO',     icon:'🕳️', bgTint:0x220033, sky:0x0a0016, fog:0x080012, ground:0xaa00ff, pts:[0xaa00ff,0xff00aa,0x6600aa] },
+  { name:'COSMOS',     icon:'🌌',  bgTint:0x3344bb, sky:0x000033, fog:0x000028, ground:0x3366ff, pts:[0x6677ff,0xaa88ff,0x3344ff] },
+  { name:'CAOS',       icon:'💀',  bgTint:0xff0066, sky:0x330011, fog:0x280010, ground:0xff0088, pts:[0xff0066,0xff6699,0xcc0044] },
 ];
 
+// ── Reliquias ─────────────────────────────────────────────────────────────────
+interface RelicConfig { id:string; name:string; icon:string; desc:string; }
+const RELICS: RelicConfig[] = [
+  { id:'grammar_dmg',  name:'Pluma Arcana',      icon:'✒️',  desc:'+1 DMG en Grammar' },
+  { id:'vocab_soul',   name:'Lengua de Fuego',   icon:'🔥',  desc:'Vocab rápido: +20 Alma' },
+  { id:'stone_heart',  name:'Corazón de Piedra', icon:'🪨',  desc:'+1 HP máximo' },
+  { id:'soul_boost',   name:'Cáliz del Alma',    icon:'🏺',  desc:'Especial al 70% de Alma' },
+  { id:'combo_shield', name:'Escudo de Racha',   icon:'⚔️',  desc:'Fallo no rompe combo (1×)' },
+  { id:'twin_shot',    name:'Bala Gemela',        icon:'⚡',  desc:'Golpe [Z] siempre doble' },
+  { id:'iron_dodge',   name:'Manto de Sombra',   icon:'👁️', desc:'Dodge +200 ms invencible' },
+  { id:'boss_breaker', name:'Filo de Caos',       icon:'💀',  desc:'+2 DMG vs Bosses' },
+  { id:'hp_regen',     name:'Lágrima Divina',     icon:'💧',  desc:'Cada 5 kills: +1 HP' },
+  { id:'soul_leech',   name:'Maldición Vieja',   icon:'🌑',  desc:'Errores drenan 15 Alma' },
+];
+
+// ── Misc ──────────────────────────────────────────────────────────────────────
+const REWARD_LABELS: Record<string,string> = {
+  bullet:'→ 🔫 +1 DMG', double:'→ ⚡ +2 DMG', grenade:'→ 💣 KILL', shield:'→ 🛡️ BLOCK',
+};
+const ENGLISH_RANKS = [
+  { min:85, label:'B+', color:'#ff88ff' },
+  { min:70, label:'B1', color:'#88aaff' },
+  { min:55, label:'A2', color:'#44ffaa' },
+  { min:40, label:'A1', color:'#ffee44' },
+  { min: 0, label:'A-', color:'#ff6644' },
+];
+
+// ═════════════════════════════════════════════════════════════════════════════
 export class GameScene extends Phaser.Scene {
-  // ── Estado ────────────────────────────────────────────────────────────
+
+  // ── Estado ──────────────────────────────────────────────────────────────
   private state:      GameState = 'idle';
   private wave        = 0;
   private enemyQueue: EnemyType[] = [];
   private enemyIdx    = 0;
   private enemy:      ActiveEnemy | null = null;
 
-  // ── Stats ─────────────────────────────────────────────────────────────
-  private hp        = PLAYER_MAX_HP;
-  private grenades  = PLAYER_GRENADES;
-  private score     = 0;
-  private combo     = 0;
-  private hasShield = false;
+  // ── Stats ────────────────────────────────────────────────────────────────
+  private hp           = PLAYER_MAX_HP;
+  private maxHp        = PLAYER_MAX_HP;
+  private grenades     = PLAYER_GRENADES;
+  private score        = 0;
+  private combo        = 0;
+  private hasShield    = false;
+  private soul         = 0;
+  private correctAns   = 0;
+  private totalAns     = 0;
+  private killCount    = 0;
+  private activeRelics: string[] = [];
+  private comboShieldUsed = false;
+  private bossPhase    = 0;
 
-  // ── Física del jugador ────────────────────────────────────────────────
-  private pX            = PLAYER_X;
-  private pY            = GROUND_Y;
-  private pVelX         = 0;
-  private pVelY         = 0;
-  private pOnGround     = true;
-  private pFacingRight  = true;
-  private pDashing      = false;
-  private pDashDir      = 1;
-  private pDashTimeLeft = 0;
-  private pCanDash      = true;
-  private pDashCdLeft   = 0;
-  private pIsAttacking  = false;
-  private pIsHurt       = false;
+  // ── Física ───────────────────────────────────────────────────────────────
+  private pX             = PLAYER_X;
+  private pY             = GROUND_Y;
+  private pVelX          = 0;
+  private pVelY          = 0;
+  private pOnGround      = true;
+  private pFacingRight   = true;
+  private pDashing       = false;
+  private pDashDir       = 1;
+  private pDashTimeLeft  = 0;
+  private pCanDash       = true;
+  private pDashCdLeft    = 0;
+  private pDodging       = false;
+  private pDodgeDir      = 1;
+  private pDodgeTimeLeft = 0;
+  private pCanDodge      = true;
+  private pDodgeCdLeft   = 0;
+  private pIframeLeft    = 0;
+  private pIsAttacking   = false;
+  private pIsHurt        = false;
   private pSelectedAtk: AttackType = 'light';
 
-  // ── Sprites ───────────────────────────────────────────────────────────
+  // ── Sprites ──────────────────────────────────────────────────────────────
   private playerSprite!: Phaser.GameObjects.Sprite;
   private shieldSprite!: Phaser.GameObjects.Image;
   private muzzleFlash!:  Phaser.GameObjects.Rectangle;
 
-  // ── HUD ───────────────────────────────────────────────────────────────
+  // ── HUD ──────────────────────────────────────────────────────────────────
   private hearts:       Phaser.GameObjects.Image[] = [];
   private scoreText!:   Phaser.GameObjects.Text;
   private waveLabel!:   Phaser.GameObjects.Text;
@@ -117,74 +161,85 @@ export class GameScene extends Phaser.Scene {
   private grenadeIcon!: Phaser.GameObjects.Text;
   private atkHint!:     Phaser.GameObjects.Text;
   private dashCDIcon!:  Phaser.GameObjects.Text;
+  private soulBarBg!:   Phaser.GameObjects.Rectangle;
+  private soulBarFill!: Phaser.GameObjects.Rectangle;
+  private soulLabel!:   Phaser.GameObjects.Text;
+  private rankBadge!:   Phaser.GameObjects.Text;
+  private relicHud!:    Phaser.GameObjects.Text;
 
-  // ── Controles ─────────────────────────────────────────────────────────
+  // ── Controles ────────────────────────────────────────────────────────────
   private keys!: {
-    k1: Phaser.Input.Keyboard.Key; k2: Phaser.Input.Keyboard.Key;
-    k3: Phaser.Input.Keyboard.Key; k4: Phaser.Input.Keyboard.Key;
-    g:  Phaser.Input.Keyboard.Key;
+    k1:Phaser.Input.Keyboard.Key; k2:Phaser.Input.Keyboard.Key;
+    k3:Phaser.Input.Keyboard.Key; k4:Phaser.Input.Keyboard.Key;
+    g:Phaser.Input.Keyboard.Key;  q:Phaser.Input.Keyboard.Key;
   };
   private mk!: {
-    left: Phaser.Input.Keyboard.Key; right: Phaser.Input.Keyboard.Key;
-    up:   Phaser.Input.Keyboard.Key; a:     Phaser.Input.Keyboard.Key;
-    d:    Phaser.Input.Keyboard.Key; w:     Phaser.Input.Keyboard.Key;
-    space:Phaser.Input.Keyboard.Key; shift: Phaser.Input.Keyboard.Key;
-    z:    Phaser.Input.Keyboard.Key; x:     Phaser.Input.Keyboard.Key;
-    c:    Phaser.Input.Keyboard.Key;
+    left:Phaser.Input.Keyboard.Key;  right:Phaser.Input.Keyboard.Key;
+    up:Phaser.Input.Keyboard.Key;    a:Phaser.Input.Keyboard.Key;
+    d:Phaser.Input.Keyboard.Key;     w:Phaser.Input.Keyboard.Key;
+    space:Phaser.Input.Keyboard.Key; shift:Phaser.Input.Keyboard.Key;
+    z:Phaser.Input.Keyboard.Key;     x:Phaser.Input.Keyboard.Key;
+    c:Phaser.Input.Keyboard.Key;     v:Phaser.Input.Keyboard.Key;
   };
 
-  // ── Panel de pregunta ─────────────────────────────────────────────────
+  // ── Panel pregunta ───────────────────────────────────────────────────────
   private qPanel!:     Phaser.GameObjects.Container;
   private qText!:      Phaser.GameObjects.Text;
   private qTypeBadge!: Phaser.GameObjects.Text;
   private qReward!:    Phaser.GameObjects.Text;
   private qTimerBar!:  Phaser.GameObjects.Rectangle;
   private qBtnBgs:     Phaser.GameObjects.Rectangle[] = [];
-  private qBtnLabels:  Phaser.GameObjects.Text[] = [];
+  private qBtnLabels:  Phaser.GameObjects.Text[]      = [];
 
-  // ── Wave banner ───────────────────────────────────────────────────────
+  // ── Wave banner ──────────────────────────────────────────────────────────
   private waveBanner!: Phaser.GameObjects.Container;
 
-  // ── Timer ─────────────────────────────────────────────────────────────
+  // ── Timer ────────────────────────────────────────────────────────────────
   private timerEvent:  Phaser.Time.TimerEvent | null = null;
   private timerElapsed = 0;
   private currentQ:    Question | null = null;
 
-  // ── Biomas ────────────────────────────────────────────────────────────
-  private biomeIdx          = 0;
-  private bgImg!:            Phaser.GameObjects.Image;
-  private mtImg!:            Phaser.GameObjects.TileSprite;
-  private skyBandRef!:       Phaser.GameObjects.Rectangle;
-  private horizGlowRef!:     Phaser.GameObjects.Rectangle;
-  private fogRects:          Phaser.GameObjects.Rectangle[] = [];
-  private fogAlphas:         number[] = [];
-  private poolElls:          Phaser.GameObjects.Ellipse[] = [];
-  private gndG1!:            Phaser.GameObjects.Rectangle;
-  private gndG2!:            Phaser.GameObjects.Rectangle;
-  private gndG3!:            Phaser.GameObjects.Rectangle;
-  private ambientEmitter!:   Phaser.GameObjects.Particles.ParticleEmitter;
+  // ── Biomas ───────────────────────────────────────────────────────────────
+  private biomeIdx         = 0;
+  private bgImg!:           Phaser.GameObjects.Image;
+  private mtImg!:           Phaser.GameObjects.TileSprite;
+  private skyBandRef!:      Phaser.GameObjects.Rectangle;
+  private horizGlowRef!:    Phaser.GameObjects.Rectangle;
+  private fogRects:         Phaser.GameObjects.Rectangle[] = [];
+  private fogAlphas:        number[]                       = [];
+  private poolElls:         Phaser.GameObjects.Ellipse[]   = [];
+  private gndG1!:           Phaser.GameObjects.Rectangle;
+  private gndG2!:           Phaser.GameObjects.Rectangle;
+  private gndG3!:           Phaser.GameObjects.Rectangle;
+  private ambientEmitter!:  Phaser.GameObjects.Particles.ParticleEmitter;
+
+  // ── Audio ─────────────────────────────────────────────────────────────────
+  private audioCtx: AudioContext | null = null;
 
   constructor() { super('Game'); }
 
-  // ─────────────────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
   create(): void {
     resetQuestionPool();
-    this.state     = 'idle';
-    this.wave      = 0;
-    this.hp        = PLAYER_MAX_HP;
-    this.grenades  = PLAYER_GRENADES;
-    this.score     = 0;
-    this.combo     = 0;
-    this.hasShield = false;
+    this.state    = 'idle';
+    this.wave     = 0;
+    this.hp       = PLAYER_MAX_HP;
+    this.maxHp    = PLAYER_MAX_HP;
+    this.grenades = PLAYER_GRENADES;
+    this.score    = 0; this.combo     = 0;
+    this.hasShield= false; this.soul  = 0;
+    this.correctAns = 0;  this.totalAns = 0;
+    this.killCount  = 0;  this.bossPhase= 0;
+    this.activeRelics = []; this.comboShieldUsed = false;
     this.pX = PLAYER_X; this.pY = GROUND_Y;
     this.pVelX = 0; this.pVelY = 0;
     this.pOnGround = true; this.pFacingRight = true;
     this.pDashing = false; this.pCanDash = true;
+    this.pDodging = false; this.pCanDodge= true; this.pIframeLeft = 0;
     this.pIsAttacking = false; this.pIsHurt = false;
-    this.biomeIdx  = 0;
-    this.fogRects  = [];
-    this.fogAlphas = [];
-    this.poolElls  = [];
+    this.biomeIdx = 0;
+    this.fogRects  = []; this.fogAlphas = []; this.poolElls = [];
+    this.hearts    = []; this.qBtnBgs   = []; this.qBtnLabels = [];
 
     this.buildBackground();
     this.buildPlayer();
@@ -199,11 +254,10 @@ export class GameScene extends Phaser.Scene {
     this.time.delayedCall(700, () => this.startWave());
   }
 
-  // ─────────────────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
   update(_t: number, delta: number): void {
     if (this.state === 'game_over') return;
 
-    // Timer bar de la pregunta activa
     if (this.state === 'questioning' && this.timerEvent) {
       this.timerElapsed += delta;
       const pct = Math.max(0, 1 - this.timerElapsed / QUESTION_TIME);
@@ -214,299 +268,258 @@ export class GameScene extends Phaser.Scene {
     }
 
     const dt = delta / 1000;
+    if (this.pIframeLeft > 0) this.pIframeLeft -= delta;
     this.updatePlayer(dt);
     this.updateEnemy(dt);
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  // 🏗️ BUILDERS
-  // ════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🏗️  BUILDERS
+  // ═══════════════════════════════════════════════════════════════════════════
 
   private buildBackground(): void {
-    // ── Imágenes base (refs guardadas para tint en bioma) ─────────────
-    this.bgImg = this.add.image(GW / 2, GH / 2, 'bg-graveyard').setDisplaySize(GW, GH).setDepth(0);
-    this.mtImg = this.add.tileSprite(GW / 2, GH * 0.38, GW, 260, 'bg-mountains').setAlpha(0.62).setDepth(0);
+    this.bgImg = this.add.image(GW/2, GH/2, 'bg-graveyard').setDisplaySize(GW, GH).setDepth(0);
+    this.mtImg = this.add.tileSprite(GW/2, GH*0.38, GW, 260, 'bg-mountains').setAlpha(0.62).setDepth(0);
 
-    // ── Color wash atmosférico del cielo ──────────────────────────────
-    this.skyBandRef = this.add.rectangle(GW / 2, 55, GW, 180, 0x28006e, 0.22).setDepth(0.5);
-    this.tweens.add({ targets: this.skyBandRef, alpha: { from: 0.22, to: 0.06 }, duration: 4500, yoyo: true, repeat: -1 });
+    this.skyBandRef = this.add.rectangle(GW/2, 55, GW, 180, 0x28006e, 0.22).setDepth(0.5);
+    this.tweens.add({ targets:this.skyBandRef, alpha:{from:0.22,to:0.06}, duration:4500, yoyo:true, repeat:-1 });
 
-    this.horizGlowRef = this.add.rectangle(GW / 2, 165, GW, 90, 0x003366, 0.17).setDepth(0.5);
-    this.tweens.add({ targets: this.horizGlowRef, alpha: { from: 0.17, to: 0.04 }, duration: 3800, yoyo: true, repeat: -1, delay: 700 });
+    this.horizGlowRef = this.add.rectangle(GW/2, 165, GW, 90, 0x003366, 0.17).setDepth(0.5);
+    this.tweens.add({ targets:this.horizGlowRef, alpha:{from:0.17,to:0.04}, duration:3800, yoyo:true, repeat:-1, delay:700 });
 
-    // ── Luna con halos en capas ───────────────────────────────────────
-    const mh1 = this.add.circle(720, 52, 105, 0xeeeebb, 0.025).setDepth(0.6);
-    const mh2 = this.add.circle(720, 52,  72, 0xeeeebb, 0.05).setDepth(0.7);
-    const mh3 = this.add.circle(720, 52,  44, 0xe8e8c0, 0.09).setDepth(0.8);
-    this.tweens.add({ targets: [mh1, mh2, mh3], alpha: { from: 1, to: 0.4 }, duration: 3200, yoyo: true, repeat: -1 });
-    this.add.image(720, 52, 'moon').setDepth(1);
+    const mh1 = this.add.circle(720,52,105,0xeeeebb,0.025).setDepth(0.6);
+    const mh2 = this.add.circle(720,52, 72,0xeeeebb,0.05 ).setDepth(0.7);
+    const mh3 = this.add.circle(720,52, 44,0xe8e8c0,0.09 ).setDepth(0.8);
+    this.tweens.add({ targets:[mh1,mh2,mh3], alpha:{from:1,to:0.4}, duration:3200, yoyo:true, repeat:-1 });
+    this.add.image(720,52,'moon').setDepth(1);
+    const moonRay = this.add.rectangle(720,GH/2+20,22,GH,0xddeeff,0.024).setDepth(0.6);
+    this.tweens.add({ targets:moonRay, alpha:{from:0.024,to:0.007}, scaleX:{from:1,to:1.7}, duration:3500, yoyo:true, repeat:-1 });
 
-    // Rayo de luz de luna
-    const moonRay = this.add.rectangle(720, GH / 2 + 20, 22, GH, 0xddeeff, 0.024).setDepth(0.6);
-    this.tweens.add({ targets: moonRay, alpha: { from: 0.024, to: 0.007 }, scaleX: { from: 1, to: 1.7 }, duration: 3500, yoyo: true, repeat: -1 });
-
-    // ── Pools de luz ambiental en el suelo ────────────────────────────
-    const pools: Array<{ x: number; color: number; rw: number; rh: number }> = [
-      { x: 80,       color: 0x6600cc, rw: 210, rh: 65 },
-      { x: 290,      color: 0x004488, rw: 190, rh: 56 },
-      { x: 510,      color: 0x550099, rw: 200, rh: 60 },
-      { x: GW - 75,  color: 0x440077, rw: 190, rh: 58 },
+    const pools = [
+      {x:80,      color:0x6600cc,rw:210,rh:65},
+      {x:290,     color:0x004488,rw:190,rh:56},
+      {x:510,     color:0x550099,rw:200,rh:60},
+      {x:GW-75,   color:0x440077,rw:190,rh:58},
     ];
-    pools.forEach(({ x, color, rw, rh }, i) => {
-      const p = this.add.ellipse(x, GROUND_Y, rw, rh, color, 0.11).setDepth(1.2);
-      this.tweens.add({ targets: p, alpha: { from: 0.11, to: 0.035 }, scaleX: { from: 1, to: 1.2 },
-        duration: 2600 + i * 550, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    pools.forEach(({x,color,rw,rh},i) => {
+      const p = this.add.ellipse(x,GROUND_Y,rw,rh,color,0.11).setDepth(1.2);
+      this.tweens.add({ targets:p, alpha:{from:0.11,to:0.035}, scaleX:{from:1,to:1.2},
+        duration:2600+i*550, yoyo:true, repeat:-1, ease:'Sine.easeInOut' });
       this.poolElls.push(p);
     });
 
-    // ── Niebla ────────────────────────────────────────────────────────
-    const fogLayers: Array<{ y: number; h: number; color: number; a: number; dur: number }> = [
-      { y: 408, h: 60, color: 0x1e0048, a: 0.62, dur: 7200 },
-      { y: 378, h: 48, color: 0x0e0034, a: 0.46, dur: 5900 },
-      { y: 350, h: 40, color: 0x070028, a: 0.30, dur: 6800 },
-      { y: 320, h: 34, color: 0x040f26, a: 0.20, dur: 5100 },
+    const fogLayers = [
+      {y:408,h:60,color:0x1e0048,a:0.62,dur:7200},
+      {y:378,h:48,color:0x0e0034,a:0.46,dur:5900},
+      {y:350,h:40,color:0x070028,a:0.30,dur:6800},
+      {y:320,h:34,color:0x040f26,a:0.20,dur:5100},
     ];
-    fogLayers.forEach((f, i) => {
-      const fog = this.add.rectangle(GW / 2, f.y, GW + 150, f.h, f.color, f.a).setDepth(1.5);
-      this.tweens.add({
-        targets: fog,
-        x:     { from: GW / 2 - 65, to: GW / 2 + 65 },
-        alpha: { from: f.a, to: f.a * 0.28 },
-        duration: f.dur, yoyo: true, repeat: -1, ease: 'Sine.easeInOut', delay: i * 1100,
-      });
+    fogLayers.forEach((f,i) => {
+      const fog = this.add.rectangle(GW/2,f.y,GW+150,f.h,f.color,f.a).setDepth(1.5);
+      this.tweens.add({ targets:fog, x:{from:GW/2-65,to:GW/2+65}, alpha:{from:f.a,to:f.a*0.28},
+        duration:f.dur, yoyo:true, repeat:-1, ease:'Sine.easeInOut', delay:i*1100 });
       this.fogRects.push(fog);
       this.fogAlphas.push(f.a);
     });
 
-    // ── Pilares con brillo en los extremos ────────────────────────────
-    [60, 220, 380, 540, 700].forEach((px, idx) => {
-      this.add.image(px, GROUND_Y, 'pillar').setOrigin(0.5, 1).setAlpha(0.22 + idx * 0.03).setDepth(1);
-      if (idx === 0 || idx === 4) {
-        const pg = this.add.ellipse(px, GROUND_Y - 6, 80, 28, 0x8800ff, 0.14).setDepth(1.3);
-        this.tweens.add({ targets: pg, alpha: { from: 0.14, to: 0.04 }, duration: 2100 + idx * 350, yoyo: true, repeat: -1 });
+    [60,220,380,540,700].forEach((px,idx) => {
+      this.add.image(px,GROUND_Y,'pillar').setOrigin(0.5,1).setAlpha(0.22+idx*0.03).setDepth(1);
+      if (idx===0||idx===4) {
+        const pg = this.add.ellipse(px,GROUND_Y-6,80,28,0x8800ff,0.14).setDepth(1.3);
+        this.tweens.add({ targets:pg, alpha:{from:0.14,to:0.04}, duration:2100+idx*350, yoyo:true, repeat:-1 });
       }
     });
 
-    // ── Suelo ─────────────────────────────────────────────────────────
-    this.add.image(GW / 2, GROUND_Y, 'ground').setOrigin(0.5, 1).setDepth(2);
-    this.gndG1 = this.add.rectangle(GW / 2, GROUND_Y + 1,  GW,  3, 0x00ff44, 0.52).setDepth(3);
-    this.gndG2 = this.add.rectangle(GW / 2, GROUND_Y + 4,  GW,  7, 0x00ff44, 0.14).setDepth(3);
-    this.gndG3 = this.add.rectangle(GW / 2, GROUND_Y + 11, GW, 12, 0x00ff44, 0.05).setDepth(3);
-    this.tweens.add({ targets: [this.gndG1, this.gndG2, this.gndG3], alpha: { from: 1, to: 0.30 }, duration: 1800, yoyo: true, repeat: -1 });
+    this.add.image(GW/2,GROUND_Y,'ground').setOrigin(0.5,1).setDepth(2);
+    this.gndG1 = this.add.rectangle(GW/2,GROUND_Y+1, GW, 3,0x00ff44,0.52).setDepth(3);
+    this.gndG2 = this.add.rectangle(GW/2,GROUND_Y+4, GW, 7,0x00ff44,0.14).setDepth(3);
+    this.gndG3 = this.add.rectangle(GW/2,GROUND_Y+11,GW,12,0x00ff44,0.05).setDepth(3);
+    this.tweens.add({ targets:[this.gndG1,this.gndG2,this.gndG3], alpha:{from:1,to:0.30}, duration:1800, yoyo:true, repeat:-1 });
 
-    // ── Partículas flotantes (ref guardada para bioma) ────────────────
-    this.ambientEmitter = this.add.particles(0, 0, 'spark', {
-      x:        { min: 30,  max: GW - 30 },
-      y:        { min: 95,  max: GROUND_Y - 30 },
-      speedY:   { min: -15, max: -55 },
-      speedX:   { min: -12, max: 12 },
-      scale:    { start: 0.28, end: 0 },
-      alpha:    { start: 0.65, end: 0 },
-      lifespan: { min: 3000, max: 5500 },
-      tint:     [0x00ff88, 0x44aaff, 0xbb55ff, 0xff6622, 0x88ff44],
-      frequency: 350,
-      gravityY:  -6,
+    this.ambientEmitter = this.add.particles(0,0,'spark',{
+      x:{min:30,max:GW-30}, y:{min:95,max:GROUND_Y-30},
+      speedY:{min:-15,max:-55}, speedX:{min:-12,max:12},
+      scale:{start:0.28,end:0}, alpha:{start:0.65,end:0},
+      lifespan:{min:3000,max:5500},
+      tint:[0x00ff88,0x44aaff,0xbb55ff,0xff6622,0x88ff44],
+      frequency:350, gravityY:-6,
     }).setDepth(2.5);
   }
 
   private buildPlayer(): void {
-    this.playerSprite = this.add.sprite(this.pX, this.pY, 'hero-idle-1')
-      .setOrigin(0.5, 1).setDepth(7).setScale(1.4);
+    this.playerSprite = this.add.sprite(this.pX,this.pY,'hero-idle-1')
+      .setOrigin(0.5,1).setDepth(7).setScale(1.4);
     this.playerSprite.play('hero_idle');
-
-    this.shieldSprite = this.add.image(this.pX, this.pY - 50, 'shield')
+    this.shieldSprite = this.add.image(this.pX,this.pY-50,'shield')
       .setAlpha(0).setDepth(5).setScale(1.2);
-
-    this.muzzleFlash = this.add.rectangle(this.pX + 68, this.pY - 52, 18, 14, 0xffffaa, 1)
+    this.muzzleFlash = this.add.rectangle(this.pX+68,this.pY-52,18,14,0xffffaa,1)
       .setAlpha(0).setDepth(8);
   }
 
   private buildHUD(): void {
-    const hudBg = this.add.rectangle(0, 0, GW, 56, C.HUD_BG, 0.88).setOrigin(0).setDepth(10);
-    this.add.rectangle(0, 56, GW, 2, 0x00aa44, 0.7).setOrigin(0).setDepth(10);
+    // Barra HUD principal (56px)
+    this.add.rectangle(0,0,GW,56,C.HUD_BG,0.88).setOrigin(0).setDepth(10);
+    this.add.rectangle(0,56,GW,2,0x00aa44,0.7).setOrigin(0).setDepth(10);
 
-    for (let i = 0; i < PLAYER_MAX_HP; i++)
-      this.hearts.push(this.add.image(18 + i * 26, 28, 'heart').setDepth(11).setScale(0.85));
+    // Corazones (PLAYER_MAX_HP + 2 slots para relic stone_heart)
+    for (let i = 0; i < PLAYER_MAX_HP + 2; i++) {
+      const h = this.add.image(18+i*26, 20,'heart').setDepth(11).setScale(0.85);
+      h.setVisible(i < PLAYER_MAX_HP);
+      this.hearts.push(h);
+    }
 
-    this.waveLabel = this.add.text(GW / 2, 28, 'WAVE 1', {
-      fontFamily: 'monospace', fontSize: '18px', color: '#00ff44', fontStyle: 'bold',
+    // Wave / score / combo
+    this.waveLabel = this.add.text(GW/2, 13, 'WAVE 1', {
+      fontFamily:'monospace', fontSize:'15px', color:'#00ff44', fontStyle:'bold',
     }).setOrigin(0.5).setDepth(11);
 
-    this.scoreText = this.add.text(GW - 20, 15, 'SCORE: 0', {
-      fontFamily: 'monospace', fontSize: '14px', color: '#ffee33',
-    }).setOrigin(1, 0).setDepth(11);
+    this.scoreText = this.add.text(GW-12, 5, 'SCORE: 0', {
+      fontFamily:'monospace', fontSize:'12px', color:'#ffee33',
+    }).setOrigin(1,0).setDepth(11);
 
-    this.comboText = this.add.text(GW - 20, 35, '', {
-      fontFamily: 'monospace', fontSize: '12px', color: '#ff8800',
-    }).setOrigin(1, 0).setDepth(11);
+    this.comboText = this.add.text(GW-12, 21, '', {
+      fontFamily:'monospace', fontSize:'11px', color:'#ff8800',
+    }).setOrigin(1,0).setDepth(11);
 
-    this.grenadeIcon = this.add.text(20, 45, `💣 ${this.grenades}`, {
-      fontFamily: 'monospace', fontSize: '13px', color: '#ff8800',
-    }).setOrigin(0, 0.5).setDepth(11);
-    this.add.text(60, 45, '[G]', {
-      fontFamily: 'monospace', fontSize: '10px', color: '#884400',
-    }).setOrigin(0, 0.5).setDepth(11);
+    // Rank badge MCER
+    this.rankBadge = this.add.text(GW/2, 32, '🎓 A-', {
+      fontFamily:'monospace', fontSize:'11px', color:'#ff6644',
+      backgroundColor:'#001422', padding:{x:6,y:2},
+    }).setOrigin(0.5).setDepth(11);
 
-    this.add.text(GW / 2, 44, '', {
-      fontFamily: 'monospace', fontSize: '11px', color: '#00ccff',
-    }).setOrigin(0.5).setDepth(11).setName('shieldHud');
+    // Grenades + shield
+    this.grenadeIcon = this.add.text(20,42,`💣 ${this.grenades}`,{
+      fontFamily:'monospace', fontSize:'12px', color:'#ff8800',
+    }).setOrigin(0,0.5).setDepth(11);
+    this.add.text(58,42,'[G]',{fontFamily:'monospace',fontSize:'9px',color:'#884400'})
+      .setOrigin(0,0.5).setDepth(11);
+    this.add.text(GW/2,49,'',{fontFamily:'monospace',fontSize:'10px',color:'#00ccff'})
+      .setOrigin(0.5).setDepth(11).setName('shieldHud');
 
-    this.atkHint = this.add.text(this.pX, this.pY - 112,
-      '[Z] Golpe  [X] Combo  [C] Especial', {
-      fontFamily: 'monospace', fontSize: '10px', color: '#ffee33',
-      backgroundColor: '#00000099', padding: { x: 4, y: 2 },
-    }).setOrigin(0.5, 1).setDepth(16).setVisible(false);
+    // Reliquias activas (iconos en HUD derecha)
+    this.relicHud = this.add.text(GW-10,44,'',{
+      fontFamily:'monospace', fontSize:'14px', color:'#ffffff',
+    }).setOrigin(1,0.5).setDepth(11);
 
-    this.dashCDIcon = this.add.text(this.pX, this.pY - 96, '⚡ dash listo', {
-      fontFamily: 'monospace', fontSize: '9px', color: '#88aaff',
-    }).setOrigin(0.5, 1).setDepth(16).setVisible(false);
+    // ── Barra de Alma (debajo del HUD, y=62) ────────────────────────────
+    this.add.rectangle(GW/2,62,GW,10,0x000c18,0.95).setOrigin(0.5).setDepth(10);
+    this.soulBarBg   = this.add.rectangle(4,62,GW-8,8,0x001a30,1).setOrigin(0,0.5).setDepth(10);
+    this.soulBarFill = this.add.rectangle(4,62,1,   8,0x4488ff,1).setOrigin(0,0.5).setDepth(11);
+    this.soulLabel   = this.add.text(GW/2,62,'⚡ ALMA  [Q]',{
+      fontFamily:'monospace', fontSize:'8px', color:'#4488ff',
+    }).setOrigin(0.5).setDepth(12).setAlpha(0.7);
+    this.add.rectangle(0,57,GW,1,0x4488ff,0.25).setOrigin(0).setDepth(10);
+    this.add.rectangle(0,67,GW,1,0x4488ff,0.25).setOrigin(0).setDepth(10);
 
-    void hudBg;
+    // Hints
+    this.atkHint = this.add.text(this.pX,this.pY-118,
+      '[Z] Golpe  [X] Combo  [C] Especial  [V] Dodge  [Q] ⚡Alma',{
+      fontFamily:'monospace', fontSize:'9px', color:'#ffee33',
+      backgroundColor:'#00000099', padding:{x:4,y:2},
+    }).setOrigin(0.5,1).setDepth(16).setVisible(false);
+
+    this.dashCDIcon = this.add.text(this.pX,this.pY-100,'⚡ listo',{
+      fontFamily:'monospace', fontSize:'9px', color:'#88aaff',
+    }).setOrigin(0.5,1).setDepth(16).setVisible(false);
   }
 
-  // ─────────────────────────────────────────────────────────────────────
-  // ❓ PANEL DE PREGUNTA — full-width bottom sheet estilo cyber/neon
-  // ─────────────────────────────────────────────────────────────────────
+  // ── Panel pregunta ───────────────────────────────────────────────────────
   private buildQuestionPanel(): void {
-    // Container anclado al centro del panel inferior
-    this.qPanel = this.add.container(GW / 2, Q_PY).setDepth(20).setVisible(false);
+    this.qPanel = this.add.container(GW/2, Q_PY).setDepth(20).setVisible(false);
 
-    // ── Fondo principal ───────────────────────────────────────────────
-    const bg = this.add.rectangle(0, 0, GW, Q_PH, 0x020c1a, 0.97);
+    const bg     = this.add.rectangle(0,0,GW,Q_PH,0x020c1a,0.97);
+    const topBar = this.add.rectangle(0,-Q_PH/2+2,GW,4,C.PANEL_BORDER);
+    this.tweens.add({ targets:topBar, alpha:{from:1,to:0.25}, duration:900, yoyo:true, repeat:-1 });
 
-    // Línea superior neon pulsante
-    const topBar = this.add.rectangle(0, -Q_PH / 2 + 2, GW, 4, C.PANEL_BORDER);
-    this.tweens.add({ targets: topBar, alpha: { from: 1, to: 0.25 }, duration: 900, yoyo: true, repeat: -1 });
+    const timerBg = this.add.rectangle(0,-Q_PH/2+12,GW-8,7,0x050f1a);
+    timerBg.setStrokeStyle(1,0x081a2a);
+    this.qTimerBar = this.add.rectangle(-(GW-8)/2,-Q_PH/2+12,GW-8,7,C.PANEL_BORDER).setOrigin(0,0.5);
 
-    // ── Barra de tiempo ───────────────────────────────────────────────
-    const timerBg = this.add.rectangle(0, -Q_PH / 2 + 12, GW - 8, 7, 0x050f1a);
-    timerBg.setStrokeStyle(1, 0x081a2a);
-    this.qTimerBar = this.add.rectangle(
-      -(GW - 8) / 2, -Q_PH / 2 + 12, GW - 8, 7, C.PANEL_BORDER,
-    ).setOrigin(0, 0.5);
+    this.qTypeBadge = this.add.text(-GW/2+12,-Q_PH/2+24,'📖 VOCAB',{
+      fontFamily:'monospace', fontSize:'11px', color:'#00eeff',
+      backgroundColor:'#001829', padding:{x:6,y:3},
+    }).setOrigin(0,0);
+    this.qReward = this.add.text(GW/2-12,-Q_PH/2+24,'',{
+      fontFamily:'monospace', fontSize:'11px', color:'#ffdd55',
+      backgroundColor:'#1a1000', padding:{x:6,y:3},
+    }).setOrigin(1,0);
+    this.qText = this.add.text(0,-Q_PH/2+44,'',{
+      fontFamily:'monospace', fontSize:'14px', color:'#cce8ff',
+      align:'center', wordWrap:{width:GW-24},
+    }).setOrigin(0.5,0);
 
-    // ── Fila superior: tipo + recompensa ─────────────────────────────
-    this.qTypeBadge = this.add.text(-GW / 2 + 12, -Q_PH / 2 + 24, '📖 VOCAB', {
-      fontFamily: 'monospace', fontSize: '11px', color: '#00eeff',
-      backgroundColor: '#001829', padding: { x: 6, y: 3 },
-    }).setOrigin(0, 0);
+    const sep = this.add.rectangle(0,-Q_PH/2+96,GW-16,1,0x0d2040);
+    this.qPanel.add([bg,topBar,timerBg,this.qTimerBar,this.qTypeBadge,this.qReward,this.qText,sep]);
 
-    this.qReward = this.add.text(GW / 2 - 12, -Q_PH / 2 + 24, '', {
-      fontFamily: 'monospace', fontSize: '11px', color: '#ffdd55',
-      backgroundColor: '#1a1000', padding: { x: 6, y: 3 },
-    }).setOrigin(1, 0);
-
-    // ── Pregunta ──────────────────────────────────────────────────────
-    this.qText = this.add.text(0, -Q_PH / 2 + 44, '', {
-      fontFamily: 'monospace', fontSize: '14px', color: '#cce8ff',
-      align: 'center', wordWrap: { width: GW - 24 },
-    }).setOrigin(0.5, 0);
-
-    // Línea separadora
-    const sep = this.add.rectangle(0, -Q_PH / 2 + 96, GW - 16, 1, 0x0d2040);
-
-    // Añadir al container (bg primero = más atrás)
-    this.qPanel.add([bg, topBar, timerBg, this.qTimerBar, this.qTypeBadge, this.qReward, this.qText, sep]);
-
-    // ── Botones 2×2 full-width ────────────────────────────────────────
-    // Dos columnas, 2 filas; cada botón ~396px × 42px
-    const BW = 396;
-    const BH = 42;
-    const colX: [number, number] = [-200, 200];
-    const rowY: [number, number] = [-Q_PH / 2 + 112 + BH / 2, -Q_PH / 2 + 112 + BH + 6 + BH / 2];
-    //   rowY[0] = -100+112+21 = +33
-    //   rowY[1] = -100+112+42+6+21 = +81
-
-    const layout: [number, number][] = [
-      [colX[0], rowY[0]], [colX[1], rowY[0]],
-      [colX[0], rowY[1]], [colX[1], rowY[1]],
+    const BW=396, BH=42;
+    const colX:[number,number] = [-200,200];
+    const rowY:[number,number] = [-Q_PH/2+112+BH/2, -Q_PH/2+112+BH+6+BH/2];
+    const layout:[number,number][] = [
+      [colX[0],rowY[0]],[colX[1],rowY[0]],
+      [colX[0],rowY[1]],[colX[1],rowY[1]],
     ];
-
-    layout.forEach(([cx, cy], i) => {
+    layout.forEach(([cx,cy],i) => {
       const col = BTN_COLORS[i];
-
-      // Fondo oscuro del botón
-      const bbg = this.add.rectangle(cx, cy, BW, BH, 0x010a18, 0.95);
-      bbg.setStrokeStyle(1.5, col, 0.6);
-      bbg.setInteractive({ useHandCursor: true });
+      const bbg = this.add.rectangle(cx,cy,BW,BH,0x010a18,0.95);
+      bbg.setStrokeStyle(1.5,col,0.6);
+      bbg.setInteractive({useHandCursor:true});
       bbg.on('pointerdown', () => this.onAnswer(i));
-      bbg.on('pointerover', () => {
-        bbg.setFillStyle(col, 0.22);
-        bbg.setStrokeStyle(2, col, 1.0);
-      });
-      bbg.on('pointerout', () => {
-        bbg.setFillStyle(0x010a18, 0.95);
-        bbg.setStrokeStyle(1.5, col, 0.6);
-      });
+      bbg.on('pointerover', () => { bbg.setFillStyle(col,0.22); bbg.setStrokeStyle(2,col,1.0); });
+      bbg.on('pointerout',  () => { bbg.setFillStyle(0x010a18,0.95); bbg.setStrokeStyle(1.5,col,0.6); });
 
-      // Barra de color izquierda (5px)
-      const accent = this.add.rectangle(cx - BW / 2, cy, 5, BH, col, 1).setOrigin(0, 0.5);
-
-      // Badge de letra
-      const badge = this.add.rectangle(cx - BW / 2 + 20, cy, 26, BH - 8, col, 0.85);
-      const badgeTxt = this.add.text(cx - BW / 2 + 20, cy, BTN_LABELS[i], {
-        fontFamily: 'monospace', fontSize: '14px', color: '#ffffff', fontStyle: 'bold',
+      const accent    = this.add.rectangle(cx-BW/2,cy,5,BH,col,1).setOrigin(0,0.5);
+      const badge     = this.add.rectangle(cx-BW/2+20,cy,26,BH-8,col,0.85);
+      const badgeTxt  = this.add.text(cx-BW/2+20,cy,BTN_LABELS[i],{
+        fontFamily:'monospace', fontSize:'14px', color:'#ffffff', fontStyle:'bold',
       }).setOrigin(0.5);
-
-      // Texto de la respuesta
-      const bt = this.add.text(cx - BW / 2 + 42, cy, '', {
-        fontFamily: 'monospace', fontSize: '13px', color: '#ddeeff',
-        wordWrap: { width: BW - 56 },
-      }).setOrigin(0, 0.5);
+      const bt        = this.add.text(cx-BW/2+42,cy,'',{
+        fontFamily:'monospace', fontSize:'13px', color:'#ddeeff', wordWrap:{width:BW-56},
+      }).setOrigin(0,0.5);
 
       this.qBtnBgs.push(bbg);
       this.qBtnLabels.push(bt);
-      this.qPanel.add([bbg, accent, badge, badgeTxt, bt]);
+      this.qPanel.add([bbg,accent,badge,badgeTxt,bt]);
     });
   }
 
   private buildWaveBanner(): void {
-    this.waveBanner = this.add.container(GW / 2, GH / 2).setDepth(30).setAlpha(0);
-    const bg = this.add.rectangle(0, 0, 500, 80, 0x000000, 0.8);
-    bg.setStrokeStyle(4, 0x00ff44);
-    const txt = this.add.text(0, 0, '', {
-      fontFamily: 'monospace', fontSize: '40px', color: '#00ff44', fontStyle: 'bold',
-    }).setOrigin(0.5).setName('bannerTxt');
-    this.waveBanner.add([bg, txt]);
+    this.waveBanner = this.add.container(GW/2,GH/2).setDepth(30).setAlpha(0);
+    const bg = this.add.rectangle(0,0,500,80,0x000000,0.8);
+    bg.setStrokeStyle(4,0x00ff44);
+    const txt = this.add.text(0,0,'',{fontFamily:'monospace',fontSize:'40px',color:'#00ff44',fontStyle:'bold'})
+      .setOrigin(0.5).setName('bannerTxt');
+    this.waveBanner.add([bg,txt]);
   }
 
   private registerAnimations(): void {
-    const heroAnims: Array<{ key: string; frames: string[]; rate: number; rep: number }> = [
-      { key: 'hero_idle',   frames: [1,2,3,4].map(i    => `hero-idle-${i}`),    rate: 6,  rep: -1 },
-      { key: 'hero_run',    frames: [1,2,3,4,5,6].map(i => `hero-run-${i}`),    rate: 10, rep: -1 },
-      { key: 'hero_attack', frames: [1,2,3,4,5].map(i  => `hero-attack-${i}`),  rate: 14, rep: 0  },
-      { key: 'hero_jump',   frames: [1,2,3,4].map(i    => `hero-jump-${i}`),    rate: 8,  rep: 0  },
-      { key: 'hero_hurt',   frames: ['hero-hurt'],                               rate: 1,  rep: 0  },
+    const heroAnims = [
+      { key:'hero_idle',   frames:[1,2,3,4].map(i=>`hero-idle-${i}`),    rate:6,  rep:-1 },
+      { key:'hero_run',    frames:[1,2,3,4,5,6].map(i=>`hero-run-${i}`), rate:10, rep:-1 },
+      { key:'hero_attack', frames:[1,2,3,4,5].map(i=>`hero-attack-${i}`),rate:14, rep:0  },
+      { key:'hero_jump',   frames:[1,2,3,4].map(i=>`hero-jump-${i}`),    rate:8,  rep:0  },
+      { key:'hero_hurt',   frames:['hero-hurt'],                          rate:1,  rep:0  },
     ];
-    heroAnims.forEach(({ key, frames, rate, rep }) => {
+    heroAnims.forEach(({key,frames,rate,rep}) => {
       if (!this.anims.exists(key))
-        this.anims.create({ key, frames: frames.map(f => ({ key: f })), frameRate: rate, repeat: rep });
+        this.anims.create({ key, frames:frames.map(f=>({key:f})), frameRate:rate, repeat:rep });
     });
-
-    const enemyDefs: Array<{ key: string; frames: string[]; rate: number }> = [
-      { key: 'zombie_walk',   frames: Array.from({length:8}, (_,i) => `skel-${i+1}`),    rate: 9 },
-      { key: 'skeleton_walk', frames: Array.from({length:8}, (_,i) => `skelc-${i+1}`),   rate: 9 },
-      { key: 'vampire_float', frames: Array.from({length:4}, (_,i) => `ghost-${i+1}`),   rate: 5 },
-      { key: 'golem_stomp',   frames: Array.from({length:4}, (_,i) => `hellcat-${i+1}`), rate: 6 },
+    const enemyDefs = [
+      { key:'zombie_walk',   frames:Array.from({length:8},(_,i)=>`skel-${i+1}`),    rate:9 },
+      { key:'skeleton_walk', frames:Array.from({length:8},(_,i)=>`skelc-${i+1}`),   rate:9 },
+      { key:'vampire_float', frames:Array.from({length:4},(_,i)=>`ghost-${i+1}`),   rate:5 },
+      { key:'golem_stomp',   frames:Array.from({length:4},(_,i)=>`hellcat-${i+1}`), rate:6 },
     ];
-    enemyDefs.forEach(({ key, frames, rate }) => {
+    enemyDefs.forEach(({key,frames,rate}) => {
       if (!this.anims.exists(key))
-        this.anims.create({ key, frames: frames.map(f => ({ key: f })), frameRate: rate, repeat: -1 });
+        this.anims.create({ key, frames:frames.map(f=>({key:f})), frameRate:rate, repeat:-1 });
     });
-
     if (!this.anims.exists('boss_fly')) {
-      this.anims.create({
-        key: 'boss_fly',
-        frames: this.anims.generateFrameNumbers('hell-beast', { start: 0, end: 4 }),
-        frameRate: 6, repeat: -1,
-      });
+      this.anims.create({ key:'boss_fly',
+        frames:this.anims.generateFrameNumbers('hell-beast',{start:0,end:4}), frameRate:6, repeat:-1 });
     }
     if (!this.anims.exists('enemy_die')) {
-      this.anims.create({
-        key: 'enemy_die',
-        frames: [1,2,3,4,5].map(i => ({ key: `edeath-${i}` })),
-        frameRate: 14, repeat: 0,
-      });
+      this.anims.create({ key:'enemy_die',
+        frames:[1,2,3,4,5].map(i=>({key:`edeath-${i}`})), frameRate:14, repeat:0 });
     }
   }
 
@@ -518,12 +531,13 @@ export class GameScene extends Phaser.Scene {
       k3: kb.addKey(Phaser.Input.Keyboard.KeyCodes.THREE),
       k4: kb.addKey(Phaser.Input.Keyboard.KeyCodes.FOUR),
       g:  kb.addKey(Phaser.Input.Keyboard.KeyCodes.G),
+      q:  kb.addKey(Phaser.Input.Keyboard.KeyCodes.Q),
     };
-    this.keys.k1.on('down', () => this.onAnswer(0));
-    this.keys.k2.on('down', () => this.onAnswer(1));
-    this.keys.k3.on('down', () => this.onAnswer(2));
-    this.keys.k4.on('down', () => this.onAnswer(3));
-    this.keys.g.on('down', () => this.useGrenade());
+    this.keys.k1.on('down',()=>this.onAnswer(0));
+    this.keys.k2.on('down',()=>this.onAnswer(1));
+    this.keys.k3.on('down',()=>this.onAnswer(2));
+    this.keys.k4.on('down',()=>this.onAnswer(3));
+    this.keys.g.on('down', ()=>this.useGrenade());
 
     this.mk = {
       left:  kb.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT),
@@ -537,50 +551,89 @@ export class GameScene extends Phaser.Scene {
       z:     kb.addKey(Phaser.Input.Keyboard.KeyCodes.Z),
       x:     kb.addKey(Phaser.Input.Keyboard.KeyCodes.X),
       c:     kb.addKey(Phaser.Input.Keyboard.KeyCodes.C),
+      v:     kb.addKey(Phaser.Input.Keyboard.KeyCodes.V),
     };
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  // 🎮 FÍSICA DEL JUGADOR
-  // ════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🎮  FÍSICA DEL JUGADOR
+  // ═══════════════════════════════════════════════════════════════════════════
 
   private updatePlayer(dt: number): void {
-    const frozen = this.state === 'questioning' || this.state === 'feedback';
+    const frozen = this.state === 'questioning' || this.state === 'feedback' || this.state === 'relic_pick';
 
+    // ── Cooldowns ───────────────────────────────────────────────────────────
     if (!this.pCanDash) {
-      this.pDashCdLeft -= dt * 1000;
+      this.pDashCdLeft -= dt*1000;
       if (this.pDashCdLeft <= 0) { this.pCanDash = true; this.dashCDIcon.setVisible(false); }
     }
     if (this.pDashing) {
-      this.pDashTimeLeft -= dt * 1000;
+      this.pDashTimeLeft -= dt*1000;
       if (this.pDashTimeLeft <= 0) { this.pDashing = false; this.playerSprite.setAlpha(1); }
     }
+    if (!this.pCanDodge) {
+      this.pDodgeCdLeft -= dt*1000;
+      if (this.pDodgeCdLeft <= 0) this.pCanDodge = true;
+    }
+    if (this.pDodging) {
+      this.pDodgeTimeLeft -= dt*1000;
+      if (this.pDodgeTimeLeft <= 0) { this.pDodging = false; this.playerSprite.setAlpha(1); }
+    }
 
+    // ── Soul special ────────────────────────────────────────────────────────
+    if (!frozen) {
+      const threshold = this.hasRelic('soul_boost') ? 70 : SOUL_MAX;
+      if (Phaser.Input.Keyboard.JustDown(this.keys.q) && this.soul >= threshold)
+        this.triggerSoulAttack();
+    }
+
+    // ── Movimiento ──────────────────────────────────────────────────────────
     if (!frozen && !this.pIsAttacking && !this.pIsHurt) {
       const goLeft  = this.mk.left.isDown  || this.mk.a.isDown;
       const goRight = this.mk.right.isDown || this.mk.d.isDown;
 
-      if (!this.pDashing) {
+      if (!this.pDashing && !this.pDodging) {
         if      (goLeft)  { this.pVelX = -P_MOVE_SPEED; this.pFacingRight = false; }
         else if (goRight) { this.pVelX =  P_MOVE_SPEED; this.pFacingRight = true;  }
         else              { this.pVelX *= 0.72; }
 
+        // Salto
         const jump = Phaser.Input.Keyboard.JustDown(this.mk.space)
                   || Phaser.Input.Keyboard.JustDown(this.mk.w)
                   || Phaser.Input.Keyboard.JustDown(this.mk.up);
-        if (jump && this.pOnGround) { this.pVelY = P_JUMP_VEL; this.pOnGround = false; }
+        if (jump && this.pOnGround) {
+          this.pVelY = P_JUMP_VEL; this.pOnGround = false;
+          this.playBeep('dash');
+        }
 
+        // Dash (Shift)
         if (Phaser.Input.Keyboard.JustDown(this.mk.shift) && this.pCanDash) {
           this.pDashing = true; this.pDashDir = this.pFacingRight ? 1 : -1;
           this.pDashTimeLeft = P_DASH_MS; this.pCanDash = false; this.pDashCdLeft = P_DASH_CD_MS;
           this.pVelX = P_DASH_SPEED * this.pDashDir;
           this.spawnDashAfterimage(); this.dashCDIcon.setVisible(true);
+          this.playBeep('dash');
         }
+
+        // Dodge roll (V) ── con i-frames
+        if (Phaser.Input.Keyboard.JustDown(this.mk.v) && this.pCanDodge) {
+          const dir = goLeft ? -1 : (goRight ? 1 : (this.pFacingRight ? 1 : -1));
+          this.pDodging = true; this.pDodgeDir = dir;
+          this.pDodgeTimeLeft = P_DODGE_MS;
+          this.pCanDodge = false; this.pDodgeCdLeft = P_DODGE_CD_MS;
+          this.pVelX = P_DODGE_SPEED * dir;
+          this.pIframeLeft = P_IFRAME_MS + (this.hasRelic('iron_dodge') ? 200 : 0);
+          this.spawnDodgeAfterimage();
+          this.playBeep('dodge');
+        }
+      } else if (this.pDodging) {
+        this.pVelX = P_DODGE_SPEED * this.pDodgeDir;
       } else {
         this.pVelX = P_DASH_SPEED * this.pDashDir;
       }
 
-      if (this.state === 'idle' && this.enemy && !this.pDashing) {
+      // Ataques
+      if (this.state === 'idle' && this.enemy && !this.pDashing && !this.pDodging) {
         if (Phaser.Input.Keyboard.JustDown(this.mk.z)) this.tryAttack('light');
         if (Phaser.Input.Keyboard.JustDown(this.mk.x)) this.tryAttack('heavy');
         if (Phaser.Input.Keyboard.JustDown(this.mk.c)) this.tryAttack('special');
@@ -599,47 +652,83 @@ export class GameScene extends Phaser.Scene {
 
     this.playerSprite.setPosition(this.pX, this.pY);
     this.playerSprite.setFlipX(!this.pFacingRight);
-    this.shieldSprite.setPosition(this.pX, this.pY - 50);
-    this.muzzleFlash.setPosition(this.pX + (this.pFacingRight ? 68 : -68), this.pY - 52);
-    this.atkHint.setPosition(this.pX, this.pY - 112);
-    this.dashCDIcon.setPosition(this.pX, this.pY - 96);
+    this.shieldSprite.setPosition(this.pX, this.pY-50);
+    this.muzzleFlash.setPosition(this.pX+(this.pFacingRight?68:-68), this.pY-52);
+    this.atkHint.setPosition(this.pX, this.pY-118);
+    this.dashCDIcon.setPosition(this.pX, this.pY-100);
+
+    // Tinte de i-frames (parpadeo durante dodge)
+    if (this.pDodging || this.pIframeLeft > 0)
+      this.playerSprite.setAlpha(Math.sin(Date.now()*0.03)*0.4+0.6);
+    else if (!this.pDashing)
+      this.playerSprite.setAlpha(1);
+
     this.updatePlayerAnim();
   }
 
   private updatePlayerAnim(): void {
     if (this.pIsAttacking || this.pIsHurt) return;
-    if (!this.pOnGround)                      { this.playerSprite.play('hero_jump', true); return; }
-    if (this.pDashing || Math.abs(this.pVelX) > 20) { this.playerSprite.play('hero_run',  true); return; }
+    if (this.pDodging) { this.playerSprite.play('hero_run', true); return; }
+    if (!this.pOnGround) { this.playerSprite.play('hero_jump', true); return; }
+    if (this.pDashing || Math.abs(this.pVelX) > 20) { this.playerSprite.play('hero_run', true); return; }
     this.playerSprite.play('hero_idle', true);
   }
 
   private spawnDashAfterimage(): void {
     for (let i = 0; i < 4; i++) {
-      this.time.delayedCall(i * 35, () => {
+      this.time.delayedCall(i*35, () => {
         const g = this.add.sprite(this.pX, this.pY, 'hero-run-1')
-          .setOrigin(0.5, 1).setScale(1.4).setFlipX(!this.pFacingRight)
-          .setAlpha(0.45 - i * 0.08).setTint(0x88aaff).setDepth(6);
-        this.tweens.add({ targets: g, alpha: 0, scaleX: 1.5, scaleY: 1.5,
-          duration: 220, ease: 'Power2', onComplete: () => g.destroy() });
+          .setOrigin(0.5,1).setScale(1.4).setFlipX(!this.pFacingRight)
+          .setAlpha(0.45-i*0.08).setTint(0x88aaff).setDepth(6);
+        this.tweens.add({ targets:g, alpha:0, scaleX:1.5, scaleY:1.5,
+          duration:220, ease:'Power2', onComplete:()=>g.destroy() });
       });
     }
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  // 👾 ENEMIGO — CHASE AI
-  // ════════════════════════════════════════════════════════════════════════
+  private spawnDodgeAfterimage(): void {
+    for (let i = 0; i < 5; i++) {
+      this.time.delayedCall(i*25, () => {
+        const g = this.add.sprite(this.pX, this.pY, 'hero-run-1')
+          .setOrigin(0.5,1).setScale(1.4).setFlipX(!this.pFacingRight)
+          .setAlpha(0.5-i*0.07).setTint(0xffffff).setDepth(6);
+        this.tweens.add({ targets:g, alpha:0, scaleY:0.8,
+          duration:180, ease:'Power2', onComplete:()=>g.destroy() });
+      });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 👾  ENEMIGO — CHASE AI + TELEGRAFÍA
+  // ═══════════════════════════════════════════════════════════════════════════
 
   private updateEnemy(dt: number): void {
     if (!this.enemy) return;
     const { sprite, hpBg, hpFill, hpLabel, spriteH } = this.enemy;
-
     const dx    = this.pX - sprite.x;
     const absDx = Math.abs(dx);
     const dir   = dx > 0 ? 1 : -1;
 
+    // Velocidad según fase del boss
+    let speed = ENEMY_STATS[this.enemy.type].speed;
+    if (this.enemy.type === 'boss') {
+      if      (this.bossPhase >= 2) speed *= 2.5;
+      else if (this.bossPhase >= 1) speed *= 1.6;
+    }
+
     if (this.state === 'idle' && absDx > E_MELEE_RANGE) {
-      sprite.x += dir * ENEMY_STATS[this.enemy.type].speed * dt;
+      sprite.x += dir * speed * dt;
       sprite.setFlipX(dx < 0);
+    }
+
+    // Telegrafía de ataque — flash rojo + ⚠️
+    if (!this.enemy.warned && absDx <= E_WARN_RANGE && this.state === 'idle') {
+      this.enemy.warned = true;
+      sprite.setTint(0xff2200);
+      this.time.delayedCall(100, ()=>{ if(this.enemy) sprite.clearTint(); });
+      this.time.delayedCall(200, ()=>{ if(this.enemy) sprite.setTint(0xff2200); });
+      this.time.delayedCall(320, ()=>{ if(this.enemy) sprite.clearTint(); });
+      this.showFloatingText(sprite.x, sprite.y - spriteH - 18, '⚠️', 0xff3300);
     }
 
     if (absDx <= E_MELEE_RANGE && this.state === 'idle') {
@@ -649,20 +738,19 @@ export class GameScene extends Phaser.Scene {
 
     const barY = sprite.y - spriteH - 10;
     hpBg.setPosition(sprite.x, barY);
-    hpLabel.setPosition(sprite.x, barY - 10);
-    hpFill.setPosition(sprite.x - 26, barY);
-
+    hpLabel.setPosition(sprite.x, barY-10);
+    hpFill.setPosition(sprite.x-26, barY);
     this.atkHint.setVisible(absDx <= E_CHASE_RANGE && this.state === 'idle');
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  // ⚔️ COMBATE
-  // ════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ⚔️  COMBATE
+  // ═══════════════════════════════════════════════════════════════════════════
 
   private tryAttack(type: AttackType): void {
     if (!this.enemy || this.pIsAttacking) return;
     if (Math.abs(this.pX - this.enemy.sprite.x) > E_CHASE_RANGE) {
-      this.showFloatingText(this.pX, this.pY - 90, '¡Muy lejos!', 0xff8800); return;
+      this.showFloatingText(this.pX, this.pY-90, '¡Muy lejos!', 0xff8800); return;
     }
     this.pSelectedAtk = type; this.pIsAttacking = true;
     this.playerSprite.play('hero_attack', true); this.muzzleFlash.setAlpha(1);
@@ -672,51 +760,50 @@ export class GameScene extends Phaser.Scene {
     this.onEnemyArrived(true);
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  // 🌊 OLAS
-  // ════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🌊  OLAS
+  // ═══════════════════════════════════════════════════════════════════════════
 
   private startWave(): void {
     const waveData = WAVES[this.wave % WAVES.length];
     this.enemyQueue = [...waveData]; this.enemyIdx = 0;
     const label = this.wave < WAVES.length
-      ? (this.wave === 4 || this.wave === 7 ? '⚡ BOSS !' : `WAVE ${this.wave + 1}`)
-      : `WAVE ${this.wave + 1}`;
+      ? (this.wave === 4 || this.wave === 7 ? '⚡ BOSS !' : `WAVE ${this.wave+1}`)
+      : `WAVE ${this.wave+1}`;
     this.waveLabel.setText(label);
-    this.showBanner(label, () => this.spawnNextEnemy());
+    this.showBanner(label, ()=>this.spawnNextEnemy());
   }
 
   private spawnNextEnemy(): void {
     if (this.enemyIdx >= this.enemyQueue.length) { this.waveComplete(); return; }
-    const type = this.enemyQueue[this.enemyIdx++];
+    const type  = this.enemyQueue[this.enemyIdx++];
     const stats = ENEMY_STATS[type];
 
-    const animKey = type === 'boss' ? 'boss_fly' : type === 'vampire' ? 'vampire_float'
-                  : type === 'golem' ? 'golem_stomp' : type === 'skeleton' ? 'skeleton_walk' : 'zombie_walk';
-    const firstTex = type === 'boss' ? 'hell-beast' : type === 'vampire' ? 'ghost-1'
-                   : type === 'golem' ? 'hellcat-1' : type === 'skeleton' ? 'skelc-1' : 'skel-1';
-    const spriteH    = type === 'boss' ? 134 : type === 'vampire' ? 65 : type === 'golem' ? 53 : 52;
-    const spriteScale = type === 'boss' ? 2.0 : 1.0;
+    const animKey    = type==='boss'?'boss_fly':type==='vampire'?'vampire_float':type==='golem'?'golem_stomp':type==='skeleton'?'skeleton_walk':'zombie_walk';
+    const firstTex   = type==='boss'?'hell-beast':type==='vampire'?'ghost-1':type==='golem'?'hellcat-1':type==='skeleton'?'skelc-1':'skel-1';
+    const spriteH    = type==='boss'?134:type==='vampire'?65:type==='golem'?53:52;
+    const spriteScale= type==='boss'?2.0:1.0;
 
     const sprite = this.add.sprite(SPAWN_X, GROUND_Y, firstTex)
-      .setOrigin(0.5, 1).setDepth(8).setFlipX(true).setScale(spriteScale);
+      .setOrigin(0.5,1).setDepth(8).setFlipX(true).setScale(spriteScale);
     sprite.play(animKey);
 
     const barY   = GROUND_Y - spriteH - 10;
     const hpBg   = this.add.rectangle(SPAWN_X, barY, 56, 8, 0x333333).setDepth(9);
-    const hpFill = this.add.rectangle(SPAWN_X - 26, barY, 52, 6, 0x00ff44).setOrigin(0, 0.5).setDepth(9);
-    const hpLabel = this.add.text(SPAWN_X, barY - 10, stats.label, {
-      fontFamily: 'monospace', fontSize: '11px', color: '#' + stats.color.toString(16).padStart(6, '0'),
+    const hpFill = this.add.rectangle(SPAWN_X-26, barY, 52, 6, 0x00ff44).setOrigin(0,0.5).setDepth(9);
+    const hpLabel= this.add.text(SPAWN_X, barY-10, stats.label, {
+      fontFamily:'monospace', fontSize:'11px', color:'#'+stats.color.toString(16).padStart(6,'0'),
     }).setOrigin(0.5).setDepth(9);
 
-    const bob = this.tweens.add({ targets: sprite, y: GROUND_Y - 5, duration: 380, yoyo: true, repeat: -1 });
-    this.enemy = { type, sprite, hpCurrent: stats.hp, hpMax: stats.hp, hpBg, hpFill, hpLabel, bob, spriteH };
+    const bob = this.tweens.add({ targets:sprite, y:GROUND_Y-5, duration:380, yoyo:true, repeat:-1 });
+    this.enemy = { type, sprite, hpCurrent:stats.hp, hpMax:stats.hp, hpBg, hpFill, hpLabel, bob, spriteH, warned:false };
+    this.bossPhase = 0;
     this.state = 'idle';
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  // ❓ PREGUNTAS
-  // ════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ❓  PREGUNTAS
+  // ═══════════════════════════════════════════════════════════════════════════
 
   private onEnemyArrived(playerInitiated = false): void {
     if (this.state === 'game_over') return;
@@ -724,50 +811,45 @@ export class GameScene extends Phaser.Scene {
     this.currentQ = getRandomQuestion(this.enemy?.type === 'boss');
 
     if (playerInitiated) {
-      const rewardMap: Record<AttackType, 'bullet' | 'double' | 'grenade'> = {
+      const rewardMap: Record<AttackType,'bullet'|'double'|'grenade'> = {
         light:   'bullet',
         heavy:   'double',
         special: this.grenades > 0 ? 'grenade' : 'double',
       };
-      this.currentQ = { ...this.currentQ, reward: rewardMap[this.pSelectedAtk] };
+      this.currentQ = { ...this.currentQ!, reward: rewardMap[this.pSelectedAtk] };
     }
     this.showQuestion(this.currentQ!);
   }
 
   private showQuestion(q: Question): void {
-    const typeColors: Record<string, string> = { vocab: '#00eeff', grammar: '#ffee33', bonus: '#ff88ff' };
-    const typeLbls:  Record<string, string>  = { vocab: '📖 VOCAB', grammar: '✍️ GRAMMAR', bonus: '⚡ BONUS' };
+    const typeColors: Record<string,string> = { vocab:'#00eeff', grammar:'#ffee33', bonus:'#ff88ff' };
+    const typeLbls:  Record<string,string>  = { vocab:'📖 VOCAB', grammar:'✍️ GRAMMAR', bonus:'⚡ BONUS' };
 
     this.qTypeBadge.setText(typeLbls[q.type] ?? q.type.toUpperCase());
     this.qTypeBadge.setColor(typeColors[q.type] ?? '#ffffff');
     this.qReward.setText(REWARD_LABELS[q.reward] ?? '');
     this.qText.setText(q.text);
 
-    // Solo actualizar el texto de respuesta (sin prefijo "A)" — el badge lo pone buildQuestionPanel)
-    q.opts.forEach((opt, i) => {
+    q.opts.forEach((opt,i) => {
       this.qBtnLabels[i].setText(opt);
-      this.qBtnBgs[i].setFillStyle(0x010a18, 0.95);
-      this.qBtnBgs[i].setStrokeStyle(1.5, BTN_COLORS[i], 0.6);
+      this.qBtnBgs[i].setFillStyle(0x010a18,0.95);
+      this.qBtnBgs[i].setStrokeStyle(1.5,BTN_COLORS[i],0.6);
     });
 
-    // Reset timer
     this.timerElapsed = 0;
-    this.qTimerBar.width = GW - 8;
+    this.qTimerBar.width = GW-8;
     this.qTimerBar.setFillStyle(C.PANEL_BORDER);
 
-    // Slide-up desde debajo de la pantalla
-    this.qPanel.setVisible(true).setAlpha(0).setY(GH + Q_PH / 2);
-    this.tweens.add({ targets: this.qPanel, alpha: 1, y: Q_PY, duration: 320, ease: 'Back.easeOut' });
-
-    this.timerEvent = this.time.delayedCall(QUESTION_TIME, () => this.onTimeout());
+    this.qPanel.setVisible(true).setAlpha(0).setY(GH+Q_PH/2);
+    this.tweens.add({ targets:this.qPanel, alpha:1, y:Q_PY, duration:320, ease:'Back.easeOut' });
+    this.timerEvent = this.time.delayedCall(QUESTION_TIME, ()=>this.onTimeout());
   }
 
   private hideQuestion(): void {
-    this.timerEvent?.remove();
-    this.timerEvent = null;
+    this.timerEvent?.remove(); this.timerEvent = null;
     this.tweens.add({
-      targets: this.qPanel, alpha: 0, y: GH + Q_PH / 2, duration: 240, ease: 'Power2.easeIn',
-      onComplete: () => this.qPanel.setVisible(false),
+      targets:this.qPanel, alpha:0, y:GH+Q_PH/2, duration:240, ease:'Power2.easeIn',
+      onComplete:()=>this.qPanel.setVisible(false),
     });
   }
 
@@ -775,15 +857,16 @@ export class GameScene extends Phaser.Scene {
     if (this.state !== 'questioning' || !this.currentQ) return;
     this.state = 'feedback';
     this.timerEvent?.remove(); this.timerEvent = null;
+    this.totalAns++;
 
     const correct = idx === this.currentQ.ans;
-    this.qBtnBgs.forEach((bg, i) => {
-      if (i === this.currentQ!.ans)   { bg.setFillStyle(C.CORRECT, 0.7); bg.setStrokeStyle(2, C.CORRECT, 1); }
-      else if (i === idx && !correct) { bg.setFillStyle(C.WRONG,   0.6); bg.setStrokeStyle(2, C.WRONG,   1); }
-      else                            { bg.setFillStyle(0x010a18, 0.5); bg.setStrokeStyle(1, 0x334466, 0.4); }
+    this.qBtnBgs.forEach((bg,i) => {
+      if      (i===this.currentQ!.ans)   { bg.setFillStyle(C.CORRECT,0.7); bg.setStrokeStyle(2,C.CORRECT,1); }
+      else if (i===idx && !correct)      { bg.setFillStyle(C.WRONG,  0.6); bg.setStrokeStyle(2,C.WRONG,  1); }
+      else                               { bg.setFillStyle(0x010a18, 0.5); bg.setStrokeStyle(1,0x334466, 0.4); }
     });
 
-    this.time.delayedCall(FEEDBACK_TIME, () => {
+    this.time.delayedCall(FEEDBACK_TIME, ()=>{
       this.hideQuestion();
       if (correct) this.onCorrectAnswer(this.currentQ!);
       else         this.onWrongAnswer();
@@ -793,39 +876,65 @@ export class GameScene extends Phaser.Scene {
   private onTimeout(): void {
     if (this.state !== 'questioning') return;
     this.state = 'feedback';
-    this.tweens.add({ targets: this.qPanel, alpha: 0.3, duration: 100, yoyo: true, repeat: 3 });
-    this.time.delayedCall(FEEDBACK_TIME, () => { this.hideQuestion(); this.onWrongAnswer(); });
+    this.totalAns++;
+    this.tweens.add({ targets:this.qPanel, alpha:0.3, duration:100, yoyo:true, repeat:3 });
+    this.time.delayedCall(FEEDBACK_TIME, ()=>{ this.hideQuestion(); this.onWrongAnswer(); });
   }
 
   private onCorrectAnswer(q: Question): void {
     this.combo++;
-    const comboBonus = Math.floor(this.combo / 3) * 50;
+    this.correctAns++;
+    this.comboShieldUsed = false;
+    const comboBonus = Math.floor(this.combo/3)*50;
+
+    // Cargar alma
+    let soulGain = SOUL_CHARGE;
+    if (this.hasRelic('vocab_soul') && q.type==='vocab' && this.timerElapsed < 3000) soulGain += 20;
+    this.soul = Math.min(SOUL_MAX, this.soul + soulGain);
+    this.updateSoulBar();
+    this.updateEnglishRank();
+    this.playBeep('correct');
 
     if (!this.pIsAttacking) {
       this.pIsAttacking = true;
-      this.playerSprite.play('hero_attack', true); this.muzzleFlash.setAlpha(1);
-      this.playerSprite.once('animationcomplete', () => {
+      this.playerSprite.play('hero_attack',true); this.muzzleFlash.setAlpha(1);
+      this.playerSprite.once('animationcomplete', ()=>{
         this.pIsAttacking = false; this.muzzleFlash.setAlpha(0);
-        this.playerSprite.play('hero_idle', true);
+        this.playerSprite.play('hero_idle',true);
       });
     }
 
-    if      (q.reward === 'grenade') { this.fireGrenade(); }
-    else if (q.reward === 'shield')  { this.activateShield(); this.addScore(150 + comboBonus); this.time.delayedCall(300, () => this.afterShot()); }
-    else {
-      const dmg = q.reward === 'double' ? 2 : 1;
-      this.fireBullet(q.reward, dmg);
-      this.addScore((q.reward === 'double' ? 120 : 80) + comboBonus);
-    }
+    // Calcular daño y tipo con reliquias
+    let reward = q.reward as string;
+    let dmg    = reward === 'double' ? 2 : 1;
+    if (this.hasRelic('grammar_dmg') && q.type==='grammar') dmg++;
+    if (this.hasRelic('twin_shot')   && reward==='bullet')  { reward='double'; dmg=2; }
+    if (this.enemy?.type==='boss' && this.hasRelic('boss_breaker')) dmg+=2;
 
-    if (this.combo >= 3) {
+    if      (reward==='grenade') { this.fireGrenade(); }
+    else if (reward==='shield')  { this.activateShield(); this.addScore(150+comboBonus); this.time.delayedCall(300,()=>this.afterShot()); }
+    else { this.fireBullet(reward, dmg); this.addScore((reward==='double'?120:80)+comboBonus); }
+
+    if (this.combo>=3) {
       this.comboText.setText(`🔥 COMBO ×${this.combo}`);
-      this.tweens.add({ targets: this.comboText, scaleX: 1.3, scaleY: 1.3, duration: 200, yoyo: true });
+      this.tweens.add({ targets:this.comboText, scaleX:1.3, scaleY:1.3, duration:200, yoyo:true });
     } else { this.comboText.setText(''); }
   }
 
   private onWrongAnswer(): void {
-    this.combo = 0; this.comboText.setText('');
+    // Relic: escudo de racha
+    if (this.hasRelic('combo_shield') && !this.comboShieldUsed && this.combo > 0) {
+      this.comboShieldUsed = true;
+      this.showFloatingText(this.pX, this.pY-85, '⚔️ RACHA PROTEGIDA', 0xffaa00);
+    } else {
+      this.combo = 0; this.comboText.setText('');
+    }
+    // Drenar alma
+    const drain = this.hasRelic('soul_leech') ? 15 : SOUL_DRAIN;
+    this.soul = Math.max(0, this.soul - drain);
+    this.updateSoulBar();
+    this.updateEnglishRank();
+
     this.playerHit();
     if (this.state !== 'game_over' && this.enemy) {
       const pushDir = this.enemy.sprite.x > this.pX ? 1 : -1;
@@ -834,32 +943,67 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  // 💥 PROYECTILES & EFECTOS
-  // ════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ⚡  ESPECIAL DE ALMA
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private triggerSoulAttack(): void {
+    if (!this.enemy) {
+      this.showFloatingText(this.pX,this.pY-80,'Sin enemigo','#888888' as unknown as number);
+      return;
+    }
+    this.soul = 0; this.updateSoulBar();
+    this.playBeep('special');
+
+    const flash = this.add.rectangle(GW/2,GH/2,GW,GH,0xaaddff,0.5).setDepth(50);
+    this.tweens.add({ targets:flash, alpha:0, duration:400, onComplete:()=>flash.destroy() });
+    this.cameras.main.shake(200,0.02);
+
+    for (let r = 0; r < 3; r++) {
+      const ring = this.add.circle(this.pX,this.pY-40,10,0x4488ff,0.7).setDepth(13);
+      this.tweens.add({
+        targets:ring, radius:180+r*40, alpha:0,
+        duration:450+r*80, delay:r*60, ease:'Power1',
+        onComplete:()=>ring.destroy(),
+      });
+    }
+    this.add.particles(this.pX,this.pY-40,'spark',{
+      speed:{min:100,max:350}, angle:{min:0,max:360}, scale:{start:1.5,end:0},
+      lifespan:{min:200,max:500}, quantity:30, tint:[0x4488ff,0x88aaff,0xaaddff],
+    }).setDepth(13).explode(30);
+
+    this.showFloatingText(this.enemy.sprite.x, this.enemy.sprite.y-80,'⚡ ESPECIAL!',0x4488ff);
+    this.dealDamage(3);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 💥  PROYECTILES & EFECTOS
+  // ═══════════════════════════════════════════════════════════════════════════
 
   private fireBullet(type: string, damage: number): void {
     if (!this.enemy) return;
     this.state = 'shooting';
-    const tex = type === 'double' ? 'dbullet' : 'bullet';
-    const sx = this.pX + (this.pFacingRight ? 62 : -62), sy = this.pY - 54;
-    const tx = this.enemy.sprite.x, ty = this.enemy.sprite.y - 30;
-    const ms = Math.max(120, Math.abs(tx - sx) * 0.7);
+    const tex = type==='double'?'dbullet':'bullet';
+    const sx = this.pX+(this.pFacingRight?62:-62), sy = this.pY-54;
+    const tx = this.enemy.sprite.x, ty = this.enemy.sprite.y-30;
+    const ms = Math.max(120, Math.abs(tx-sx)*0.7);
 
-    const bullet = this.add.image(sx, sy, tex).setDepth(7);
-    const trail  = this.add.particles(sx, sy, 'spark', {
-      speed: { min:10, max:40 }, angle: { min:160, max:200 },
-      scale: { start:0.8, end:0 }, lifespan:110,
-      tint: type === 'double' ? 0x33ffcc : 0xffee33, frequency:18,
+    const bullet = this.add.image(sx,sy,tex).setDepth(7);
+    const trail  = this.add.particles(sx,sy,'spark',{
+      speed:{min:10,max:40}, angle:{min:160,max:200},
+      scale:{start:0.8,end:0}, lifespan:110,
+      tint:type==='double'?0x33ffcc:0xffee33, frequency:18,
     }).setDepth(6);
 
     this.tweens.add({
-      targets: bullet, x: tx, y: ty, duration: ms, ease: 'Linear',
-      onUpdate: () => trail.setPosition(bullet.x, bullet.y),
-      onComplete: () => {
-        trail.stop(); this.time.delayedCall(150, () => trail.destroy());
+      targets:bullet, x:tx, y:ty, duration:ms, ease:'Linear',
+      onUpdate:()=>trail.setPosition(bullet.x, bullet.y),
+      onComplete:()=>{
+        trail.stop(); this.time.delayedCall(150,()=>trail.destroy());
         bullet.destroy();
-        this.spawnHitParticles(tx, ty, type === 'double' ? 0x33ffcc : 0xffee33);
+        this.spawnHitParticles(tx, ty, type==='double'?0x33ffcc:0xffee33);
+        this.hitFreeze(65);
+        this.playBeep('hit');
         this.dealDamage(damage);
       },
     });
@@ -868,46 +1012,79 @@ export class GameScene extends Phaser.Scene {
   private fireGrenade(): void {
     if (!this.enemy) return;
     this.state = 'shooting';
-    const sx = this.pX + (this.pFacingRight ? 52 : -52), sy = this.pY - 38;
+    const sx = this.pX+(this.pFacingRight?52:-52), sy = this.pY-38;
     const tx = this.enemy.sprite.x, ty = this.enemy.sprite.y;
 
-    const gren = this.add.image(sx, sy, 'grenade').setDepth(7);
+    const gren = this.add.image(sx,sy,'grenade').setDepth(7);
     this.tweens.add({
-      targets: gren, x: tx, y: ty - 20, duration: 350, ease: 'Power1',
-      onComplete: () => {
-        gren.destroy(); this.spawnExplosion(tx, ty);
-        if (this.enemy) { this.enemy.hpCurrent = 0; this.killEnemy(); }
+      targets:gren, x:tx, y:ty-20, duration:350, ease:'Power1',
+      onComplete:()=>{
+        gren.destroy(); this.spawnExplosion(tx,ty);
+        this.hitFreeze(100);
+        this.playBeep('special');
+        if (this.enemy) { this.enemy.hpCurrent=0; this.killEnemy(); }
       },
     });
-    this.tweens.add({ targets: gren, angle: 360, duration: 300 });
+    this.tweens.add({ targets:gren, angle:360, duration:300 });
   }
 
   private activateShield(): void {
     this.hasShield = true; this.shieldSprite.setAlpha(0.8);
-    this.tweens.add({ targets: this.shieldSprite, alpha: { from:0.8, to:0.4 }, duration:500, yoyo:true, repeat:-1 });
-    this.showFloatingText(this.pX, this.pY - 80, '🛡️ ESCUDO', 0x00ccff);
-    (this.children.getByName('shieldHud') as Phaser.GameObjects.Text | null)?.setText('🛡️ SHIELD ACTIVO');
+    this.tweens.add({ targets:this.shieldSprite, alpha:{from:0.8,to:0.4}, duration:500, yoyo:true, repeat:-1 });
+    this.showFloatingText(this.pX,this.pY-80,'🛡️ ESCUDO',0x00ccff);
+    (this.children.getByName('shieldHud') as Phaser.GameObjects.Text|null)?.setText('🛡️ SHIELD ACTIVO');
   }
 
   private useGrenade(): void {
-    if (this.grenades <= 0 || !this.enemy || this.state === 'game_over') return;
+    if (this.grenades<=0||!this.enemy||this.state==='game_over') return;
     this.grenades--; this.grenadeIcon.setText(`💣 ${this.grenades}`);
-    if (this.state === 'questioning') { this.hideQuestion(); this.state = 'shooting'; }
+    if (this.state==='questioning') { this.hideQuestion(); this.state='shooting'; }
     this.fireGrenade();
   }
 
   private dealDamage(amount: number): void {
     if (!this.enemy) return;
-    this.enemy.hpCurrent = Math.max(0, this.enemy.hpCurrent - amount);
-    this.tweens.add({ targets: this.enemy.sprite, alpha:0.2, duration:80, yoyo:true, repeat:2 });
+    let dmg = amount;
+    if (this.enemy.type==='boss' && this.hasRelic('boss_breaker')) dmg+=2;
+
+    this.enemy.hpCurrent = Math.max(0, this.enemy.hpCurrent - dmg);
+    this.tweens.add({ targets:this.enemy.sprite, alpha:0.2, duration:80, yoyo:true, repeat:2 });
+    this.hitFreeze(65);
+
     const pct = this.enemy.hpCurrent / this.enemy.hpMax;
-    this.tweens.add({ targets: this.enemy.hpFill, width: Math.max(2, 52 * pct), duration: 200 });
-    this.enemy.hpFill.setFillStyle(pct > 0.6 ? 0x00ff44 : pct > 0.3 ? 0xffaa00 : 0xff3300);
+    this.tweens.add({ targets:this.enemy.hpFill, width:Math.max(2,52*pct), duration:200 });
+    this.enemy.hpFill.setFillStyle(pct>0.6?0x00ff44:pct>0.3?0xffaa00:0xff3300);
+
+    // ── Fases del boss ────────────────────────────────────────────────────
+    if (this.enemy.type === 'boss') {
+      if (pct <= 0.25 && this.bossPhase < 2) {
+        this.bossPhase = 2;
+        this.enemy.sprite.setTint(0xff6600);
+        this.cameras.main.shake(300,0.025);
+        this.showFloatingText(this.enemy.sprite.x,this.enemy.sprite.y-80,'💢 BERSERKER!',0xff6600);
+        this.playBeep('enrage');
+        this.add.particles(this.enemy.sprite.x,this.enemy.sprite.y-60,'spark',{
+          speed:{min:80,max:220},angle:{min:0,max:360},scale:{start:1.5,end:0},
+          lifespan:{min:200,max:400},quantity:20,tint:[0xff2200,0xff6600,0xffaa00],
+        }).setDepth(12).explode(20);
+      } else if (pct <= 0.5 && this.bossPhase < 1) {
+        this.bossPhase = 1;
+        this.enemy.sprite.setTint(0xff2200);
+        this.cameras.main.shake(200,0.018);
+        this.showFloatingText(this.enemy.sprite.x,this.enemy.sprite.y-80,'💢 ENRABIADO!',0xff2200);
+        this.playBeep('enrage');
+        this.add.particles(this.enemy.sprite.x,this.enemy.sprite.y-60,'spark',{
+          speed:{min:60,max:150},angle:{min:0,max:360},scale:{start:1,end:0},
+          lifespan:{min:150,max:300},quantity:12,tint:[0xff4400,0xff8800],
+        }).setDepth(12).explode(12);
+      }
+    }
+
     if (this.enemy.hpCurrent <= 0) this.killEnemy(); else this.afterShot();
   }
 
   private afterShot(): void {
-    this.time.delayedCall(350, () => { if (this.state !== 'game_over') this.state = 'idle'; });
+    this.time.delayedCall(350,()=>{ if(this.state!=='game_over') this.state='idle'; });
   }
 
   private killEnemy(): void {
@@ -918,262 +1095,466 @@ export class GameScene extends Phaser.Scene {
     bob.stop(); sprite.stop(); hpBg.destroy(); hpFill.destroy(); hpLabel.destroy();
 
     const base = ENEMY_STATS[type].score;
-    const mult = 1 + Math.floor(this.combo / 3) * 0.25;
-    this.addScore(Math.floor(base * mult));
+    const mult = 1 + Math.floor(this.combo/3)*0.25;
+    this.addScore(Math.floor(base*mult));
+
+    // HP regen relic
+    this.killCount++;
+    if (this.hasRelic('hp_regen') && this.killCount%5===0 && this.hp < this.maxHp) {
+      this.hp++; this.updateHearts();
+      this.showFloatingText(this.pX,this.pY-80,'💧 +1 HP',0x44ddff);
+    }
+
+    // Word echo — muestra la palabra en inglés al matar
+    if (this.currentQ?.type==='vocab') {
+      this.showWordEcho(this.currentQ.opts[this.currentQ.ans], ex, ey);
+    }
+
+    this.hitFreeze(80);
 
     this.tweens.add({
-      targets: sprite, y: GROUND_Y + 10, alpha: 0,
-      angle: type === 'boss' ? 90 : 30,
-      scaleX: type === 'boss' ? 0.5 : 0.3, scaleY: type === 'boss' ? 0.5 : 0.3,
-      duration: type === 'boss' ? 600 : 350, ease: 'Power2',
-      onComplete: () => sprite.destroy(),
+      targets:sprite, y:GROUND_Y+10, alpha:0,
+      angle:type==='boss'?90:30,
+      scaleX:type==='boss'?0.5:0.3, scaleY:type==='boss'?0.5:0.3,
+      duration:type==='boss'?600:350, ease:'Power2',
+      onComplete:()=>sprite.destroy(),
     });
 
-    this.spawnExplosion(ex, ey - 20);
-    this.showFloatingText(ex, ey - 60, `+${Math.floor(base * mult)}`, C.YELLOW);
-    this.cameras.main.shake(type === 'boss' ? 400 : 120, type === 'boss' ? 0.02 : 0.007);
+    this.spawnExplosion(ex,ey-20);
+    this.showFloatingText(ex,ey-60,`+${Math.floor(base*mult)}`,C.YELLOW);
+    this.cameras.main.shake(type==='boss'?400:120, type==='boss'?0.02:0.007);
     this.atkHint.setVisible(false);
-    this.enemy = null;
+    this.enemy = null; this.bossPhase = 0;
 
-    this.time.delayedCall(type === 'boss' ? 1200 : 600, () => {
-      if (this.state !== 'game_over') this.spawnNextEnemy();
+    this.time.delayedCall(type==='boss'?1200:600,()=>{
+      if (this.state!=='game_over') this.spawnNextEnemy();
     });
   }
 
   private playerHit(): void {
+    if (this.pIframeLeft > 0) return;   // i-frames del dodge roll
+
     if (this.hasShield) {
-      this.hasShield = false; this.shieldSprite.setAlpha(0); this.tweens.killTweensOf(this.shieldSprite);
-      this.showFloatingText(this.pX, this.pY - 90, '🛡️ BLOQUEADO', 0x00ccff);
-      (this.children.getByName('shieldHud') as Phaser.GameObjects.Text | null)?.setText('');
+      this.hasShield=false; this.shieldSprite.setAlpha(0); this.tweens.killTweensOf(this.shieldSprite);
+      this.showFloatingText(this.pX,this.pY-90,'🛡️ BLOQUEADO',0x00ccff);
+      (this.children.getByName('shieldHud') as Phaser.GameObjects.Text|null)?.setText('');
+      this.playBeep('hit');
       return;
     }
     this.hp--; this.updateHearts();
-    this.cameras.main.shake(180, 0.015);
-    const flash = this.add.rectangle(GW / 2, GH / 2, GW, GH, 0xff0000, 0.35).setDepth(50);
-    this.tweens.add({ targets: flash, alpha: 0, duration: 250, onComplete: () => flash.destroy() });
+    this.cameras.main.shake(180,0.015);
+    const flash = this.add.rectangle(GW/2,GH/2,GW,GH,0xff0000,0.35).setDepth(50);
+    this.tweens.add({ targets:flash, alpha:0, duration:250, onComplete:()=>flash.destroy() });
 
     const knockDir = this.enemy ? (this.pX < this.enemy.sprite.x ? -1 : 1) : -1;
-    this.pVelX = knockDir * 260; this.pVelY = -200; this.pOnGround = false;
+    this.pVelX = knockDir*260; this.pVelY = -200; this.pOnGround = false;
 
     this.pIsHurt = true;
-    this.playerSprite.play('hero_hurt', true);
-    this.time.delayedCall(400, () => {
+    this.playerSprite.play('hero_hurt',true);
+    this.playBeep('wrong');
+    this.time.delayedCall(400,()=>{
       this.pIsHurt = false;
-      if (this.state !== 'game_over') this.playerSprite.play('hero_idle', true);
+      if (this.state!=='game_over') this.playerSprite.play('hero_idle',true);
     });
 
-    this.showFloatingText(this.pX, this.pY - 80, '💔 -1 HP', C.WRONG);
-    if (this.hp <= 0) this.doGameOver();
+    this.showFloatingText(this.pX,this.pY-80,'💔 -1 HP',C.WRONG);
+    if (this.hp<=0) this.doGameOver();
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  // 🎆 PARTÍCULAS & EFECTOS VISUALES
-  // ════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🎆  PARTÍCULAS & EFECTOS VISUALES
+  // ═══════════════════════════════════════════════════════════════════════════
 
-  private spawnHitParticles(x: number, y: number, color = 0xffee33): void {
-    const sparks = this.add.particles(x, y, 'spark', {
+  private spawnHitParticles(x:number,y:number,color=0xffee33): void {
+    const sparks = this.add.particles(x,y,'spark',{
       speed:{min:80,max:260}, angle:{min:0,max:360}, scale:{start:1.2,end:0},
       lifespan:{min:150,max:320}, quantity:14, tint:[color,0xffffff,0xffaa00], gravityY:180,
     }).setDepth(12);
     sparks.explode(14);
-    this.time.delayedCall(400, () => sparks.destroy());
-
-    const imp = this.add.circle(x, y, 14, color, 0.9).setDepth(11);
-    this.tweens.add({ targets: imp, radius: 28, alpha: 0, duration: 180, ease: 'Power2', onComplete: () => imp.destroy() });
+    this.time.delayedCall(400,()=>sparks.destroy());
+    const imp = this.add.circle(x,y,14,color,0.9).setDepth(11);
+    this.tweens.add({ targets:imp, radius:28, alpha:0, duration:180, ease:'Power2', onComplete:()=>imp.destroy() });
   }
 
-  private spawnExplosion(x: number, y: number): void {
-    const exp = this.add.image(x, y, 'explosion').setDepth(10).setScale(0.3);
-    this.tweens.add({ targets: exp, scale: 3.0, alpha: 0, duration: 450, ease: 'Power2', onComplete: () => exp.destroy() });
-
-    const fire = this.add.particles(x, y, 'ptfire', {
-      speed:{min:60,max:280}, angle:{min:0,max:360}, scale:{start:2,end:0},
-      lifespan:{min:250,max:550}, quantity:32, tint:[0xff2200,0xff6600,0xffaa00,0xffff00], gravityY:120,
+  private spawnExplosion(x:number,y:number): void {
+    const exp = this.add.image(x,y,'explosion').setDepth(10).setScale(0.3);
+    this.tweens.add({ targets:exp, scale:3.0, alpha:0, duration:450, ease:'Power2', onComplete:()=>exp.destroy() });
+    const fire = this.add.particles(x,y,'ptfire',{
+      speed:{min:60,max:280},angle:{min:0,max:360},scale:{start:2,end:0},
+      lifespan:{min:250,max:550},quantity:32,tint:[0xff2200,0xff6600,0xffaa00,0xffff00],gravityY:120,
     }).setDepth(11);
     fire.explode(32);
-
-    const smoke = this.add.particles(x, y, 'ptsmoke', {
-      speed:{min:20,max:80}, angle:{min:230,max:310}, scale:{start:1.5,end:0},
-      lifespan:{min:400,max:800}, quantity:10, tint:[0x555555,0x888888,0xaaaaaa], gravityY:-30,
+    const smoke = this.add.particles(x,y,'ptsmoke',{
+      speed:{min:20,max:80},angle:{min:230,max:310},scale:{start:1.5,end:0},
+      lifespan:{min:400,max:800},quantity:10,tint:[0x555555,0x888888,0xaaaaaa],gravityY:-30,
     }).setDepth(12);
     smoke.explode(10);
-
-    for (let i = 0; i < 3; i++) {
-      const ring = this.add.circle(x, y, 8, 0xff6600, 0.7).setDepth(9);
-      this.tweens.add({ targets: ring, radius: 30+i*22, alpha: 0, duration: 280+i*90, delay: i*60, ease: 'Power1', onComplete: () => ring.destroy() });
+    for (let i=0;i<3;i++) {
+      const ring = this.add.circle(x,y,8,0xff6600,0.7).setDepth(9);
+      this.tweens.add({ targets:ring, radius:30+i*22, alpha:0, duration:280+i*90, delay:i*60, ease:'Power1', onComplete:()=>ring.destroy() });
     }
-    this.time.delayedCall(700, () => { fire.destroy(); smoke.destroy(); });
+    this.time.delayedCall(700,()=>{ fire.destroy(); smoke.destroy(); });
   }
 
-  private showFloatingText(x: number, y: number, msg: string, color: number): void {
-    const t = this.add.text(x, y, msg, {
-      fontFamily: 'monospace', fontSize: '16px', color: '#' + color.toString(16).padStart(6, '0'),
-      fontStyle: 'bold', stroke: '#000000', strokeThickness: 3,
+  private showFloatingText(x:number,y:number,msg:string,color:number): void {
+    const t = this.add.text(x,y,msg,{
+      fontFamily:'monospace', fontSize:'16px', color:'#'+color.toString(16).padStart(6,'0'),
+      fontStyle:'bold', stroke:'#000000', strokeThickness:3,
     }).setOrigin(0.5).setDepth(15);
-    this.tweens.add({ targets: t, y: y - 50, alpha: 0, duration: 900, ease: 'Power2', onComplete: () => t.destroy() });
+    this.tweens.add({ targets:t, y:y-50, alpha:0, duration:900, ease:'Power2', onComplete:()=>t.destroy() });
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  // 📊 HUD
-  // ════════════════════════════════════════════════════════════════════════
+  // Word echo — la palabra en inglés flota al matar con vocab
+  private showWordEcho(word:string, x:number, y:number): void {
+    const w = word.length*13+28;
+    const bg = this.add.rectangle(x,y-40,w,36,0x000000,0.76).setDepth(14);
+    bg.setStrokeStyle(2,0x00eeff,0.9);
+    const t = this.add.text(x,y-40,word.toUpperCase(),{
+      fontFamily:'monospace', fontSize:'18px', color:'#00eeff',
+      fontStyle:'bold', stroke:'#003344', strokeThickness:2,
+    }).setOrigin(0.5).setDepth(15);
+    this.tweens.add({
+      targets:[t,bg], y:y-100, alpha:0, duration:1600, ease:'Power2',
+      onComplete:()=>{ t.destroy(); bg.destroy(); },
+    });
+  }
+
+  // Hit-freeze: pausa los tweens por `ms` milisegundos reales
+  private hitFreeze(ms=65): void {
+    this.tweens.timeScale = 0.02;
+    window.setTimeout(()=>{ if(this.tweens) this.tweens.timeScale=1; }, ms);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔊  AUDIO PROCEDURAL (Web Audio API)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private getAudioCtx(): AudioContext|null {
+    if (!this.audioCtx) {
+      try {
+        const Ctor = window.AudioContext
+          ?? (window as unknown as {webkitAudioContext:typeof AudioContext}).webkitAudioContext;
+        this.audioCtx = new Ctor();
+      } catch { return null; }
+    }
+    if (this.audioCtx.state==='suspended') { void this.audioCtx.resume(); }
+    return this.audioCtx;
+  }
+
+  private playBeep(type:string): void {
+    const ctx = this.getAudioCtx();
+    if (!ctx) return;
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    const t = ctx.currentTime;
+
+    switch(type) {
+      case 'correct':
+        osc.type='sine';
+        osc.frequency.setValueAtTime(440,t);
+        osc.frequency.setValueAtTime(660,t+0.08);
+        osc.frequency.setValueAtTime(880,t+0.16);
+        gain.gain.setValueAtTime(0.14,t);
+        gain.gain.exponentialRampToValueAtTime(0.001,t+0.35);
+        osc.start(t); osc.stop(t+0.35);
+        break;
+      case 'wrong':
+        osc.type='sawtooth';
+        osc.frequency.setValueAtTime(220,t);
+        osc.frequency.exponentialRampToValueAtTime(55,t+0.25);
+        gain.gain.setValueAtTime(0.18,t);
+        gain.gain.exponentialRampToValueAtTime(0.001,t+0.3);
+        osc.start(t); osc.stop(t+0.3);
+        break;
+      case 'hit':
+        osc.type='square';
+        osc.frequency.setValueAtTime(160,t);
+        osc.frequency.exponentialRampToValueAtTime(40,t+0.12);
+        gain.gain.setValueAtTime(0.22,t);
+        gain.gain.exponentialRampToValueAtTime(0.001,t+0.15);
+        osc.start(t); osc.stop(t+0.15);
+        break;
+      case 'special':
+        osc.type='sine';
+        osc.frequency.setValueAtTime(220,t);
+        osc.frequency.exponentialRampToValueAtTime(880,t+0.3);
+        osc.frequency.exponentialRampToValueAtTime(1320,t+0.5);
+        gain.gain.setValueAtTime(0.16,t);
+        gain.gain.exponentialRampToValueAtTime(0.001,t+0.6);
+        osc.start(t); osc.stop(t+0.6);
+        break;
+      case 'dash':
+        osc.type='sine';
+        osc.frequency.setValueAtTime(600,t);
+        osc.frequency.exponentialRampToValueAtTime(200,t+0.1);
+        gain.gain.setValueAtTime(0.09,t);
+        gain.gain.exponentialRampToValueAtTime(0.001,t+0.12);
+        osc.start(t); osc.stop(t+0.12);
+        break;
+      case 'dodge':
+        osc.type='sine';
+        osc.frequency.setValueAtTime(800,t);
+        osc.frequency.exponentialRampToValueAtTime(300,t+0.09);
+        gain.gain.setValueAtTime(0.07,t);
+        gain.gain.exponentialRampToValueAtTime(0.001,t+0.1);
+        osc.start(t); osc.stop(t+0.1);
+        break;
+      case 'enrage':
+        osc.type='sawtooth';
+        osc.frequency.setValueAtTime(80,t);
+        osc.frequency.exponentialRampToValueAtTime(160,t+0.2);
+        osc.frequency.exponentialRampToValueAtTime(80,t+0.4);
+        gain.gain.setValueAtTime(0.28,t);
+        gain.gain.exponentialRampToValueAtTime(0.001,t+0.5);
+        osc.start(t); osc.stop(t+0.5);
+        break;
+      case 'relic':
+        osc.type='sine';
+        osc.frequency.setValueAtTime(660,t);
+        osc.frequency.setValueAtTime(880,t+0.1);
+        osc.frequency.setValueAtTime(1100,t+0.2);
+        osc.frequency.setValueAtTime(1320,t+0.3);
+        gain.gain.setValueAtTime(0.12,t);
+        gain.gain.exponentialRampToValueAtTime(0.001,t+0.45);
+        osc.start(t); osc.stop(t+0.45);
+        break;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📊  HUD — actualizaciones
+  // ═══════════════════════════════════════════════════════════════════════════
 
   private updateHearts(): void {
-    this.hearts.forEach((h, i) => h.setTexture(i < this.hp ? 'heart' : 'heart_empty'));
+    this.hearts.forEach((h,i)=>{
+      h.setVisible(i < this.maxHp);
+      h.setTexture(i < this.hp ? 'heart' : 'heart_empty');
+    });
   }
 
-  private addScore(pts: number): void {
+  private addScore(pts:number): void {
     this.score += pts;
     this.scoreText.setText(`SCORE: ${this.score.toLocaleString()}`);
     try {
-      const hi = parseInt(localStorage.getItem('icfes_shooter_hi') || '0', 10);
-      if (this.score > hi) localStorage.setItem('icfes_shooter_hi', String(this.score));
+      const hi = parseInt(localStorage.getItem('icfes_shooter_hi')||'0',10);
+      if (this.score>hi) localStorage.setItem('icfes_shooter_hi',String(this.score));
     } catch { /* noop */ }
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  // 🌊 OLEADAS
-  // ════════════════════════════════════════════════════════════════════════
+  private updateSoulBar(): void {
+    const threshold = this.hasRelic('soul_boost') ? 70 : SOUL_MAX;
+    const pct = Math.min(this.soul/SOUL_MAX, 1);
+    this.soulBarFill.width = Math.max(1, (GW-8)*pct);
+    if (this.soul >= threshold) {
+      this.soulBarFill.setFillStyle(0xaaddff);
+      this.soulLabel.setText('⚡ ALMA  [Q] ¡LISTO!').setColor('#aaddff').setAlpha(1);
+    } else {
+      this.soulBarFill.setFillStyle(0x4488ff);
+      this.soulLabel.setText(`⚡ ALMA  [Q]   ${Math.floor(this.soul)}%`).setColor('#4488ff').setAlpha(0.7);
+    }
+  }
+
+  private updateEnglishRank(): void {
+    if (this.totalAns===0) return;
+    const pct = (this.correctAns/this.totalAns)*100;
+    const rank = ENGLISH_RANKS.find(r=>pct>=r.min) ?? ENGLISH_RANKS[ENGLISH_RANKS.length-1];
+    this.rankBadge.setText(`🎓 ${rank.label}`).setColor(rank.color);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🛡️  RELIQUIAS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private hasRelic(id:string): boolean { return this.activeRelics.includes(id); }
+
+  private showRelicPicker(onDone:()=>void): void {
+    this.state = 'relic_pick';
+
+    const available = RELICS.filter(r=>!this.activeRelics.includes(r.id));
+    const pool = (Phaser.Utils.Array.Shuffle([...available]) as RelicConfig[]).slice(0,3);
+    while (pool.length<3) pool.push(RELICS[Math.floor(Math.random()*RELICS.length)]);
+
+    const overlay = this.add.rectangle(GW/2,GH/2,GW,GH,0x000000,0.84).setDepth(40);
+    const cont    = this.add.container(0,0).setDepth(41);
+
+    const titleTxt = this.add.text(GW/2,78,'✨ ELIGE UNA RELIQUIA',{
+      fontFamily:'monospace', fontSize:'22px', color:'#ffdd55', fontStyle:'bold',
+    }).setOrigin(0.5);
+    const subTxt = this.add.text(GW/2,108,'Completaste la ola — escoge tu recompensa.',{
+      fontFamily:'monospace', fontSize:'11px', color:'#88aacc',
+    }).setOrigin(0.5);
+    cont.add([titleTxt, subTxt]);
+
+    const cardXs = [GW/2-252, GW/2, GW/2+252];
+    const CW=208, CH=175;
+
+    pool.forEach((relic,i)=>{
+      const cx=cardXs[i], cy=GH/2+14;
+      const card = this.add.rectangle(cx,cy,CW,CH,0x020c1a,0.96).setInteractive({useHandCursor:true});
+      card.setStrokeStyle(2,0x334466,0.8);
+
+      const iconTxt = this.add.text(cx,cy-58,relic.icon,{fontFamily:'monospace',fontSize:'38px'}).setOrigin(0.5);
+      const nameTxt = this.add.text(cx,cy-10,relic.name,{
+        fontFamily:'monospace',fontSize:'13px',color:'#eeddaa',fontStyle:'bold',
+        wordWrap:{width:CW-18},align:'center',
+      }).setOrigin(0.5);
+      const descTxt = this.add.text(cx,cy+30,relic.desc,{
+        fontFamily:'monospace',fontSize:'11px',color:'#88aacc',
+        wordWrap:{width:CW-18},align:'center',
+      }).setOrigin(0.5);
+
+      card.on('pointerover',()=>{
+        card.setFillStyle(0x0a2040,0.98); card.setStrokeStyle(2.5,0xffdd55,1);
+        this.tweens.add({ targets:[iconTxt,nameTxt,descTxt], scaleX:1.06, scaleY:1.06, duration:100 });
+      });
+      card.on('pointerout',()=>{
+        card.setFillStyle(0x020c1a,0.96); card.setStrokeStyle(2,0x334466,0.8);
+        this.tweens.add({ targets:[iconTxt,nameTxt,descTxt], scaleX:1, scaleY:1, duration:100 });
+      });
+      card.on('pointerdown',()=>{
+        this.applyRelic(relic);
+        this.playBeep('relic');
+        this.tweens.add({ targets:card, scaleX:1.08, scaleY:1.08, duration:120, yoyo:true });
+        this.time.delayedCall(380,()=>{
+          this.tweens.add({ targets:[overlay,cont], alpha:0, duration:280, ease:'Power2',
+            onComplete:()=>{ overlay.destroy(); cont.destroy(); onDone(); } });
+        });
+      });
+
+      cont.add([card, iconTxt, nameTxt, descTxt]);
+    });
+
+    cont.setAlpha(0).setY(28);
+    this.tweens.add({ targets:cont, alpha:1, y:0, duration:380, ease:'Back.easeOut' });
+  }
+
+  private applyRelic(relic:RelicConfig): void {
+    if (!this.activeRelics.includes(relic.id)) this.activeRelics.push(relic.id);
+    if (relic.id==='stone_heart') {
+      this.maxHp++; this.hp = Math.min(this.hp+1, this.maxHp);
+      this.updateHearts();
+    }
+    this.relicHud.setText(this.activeRelics.map(id=>RELICS.find(r=>r.id===id)?.icon??'').join(' '));
+    this.showFloatingText(GW/2,GH/2-20,`✨ ${relic.name}!`,0xffdd55);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🌊  OLEADAS
+  // ═══════════════════════════════════════════════════════════════════════════
 
   private waveComplete(): void {
     this.state = 'wave_clear';
-    const bonus = this.grenades * 200;
-    if (bonus > 0) this.addScore(bonus);
-    const isLastBoss = this.wave >= WAVES.length - 1;
-    const msg = isLastBoss ? '🏆 ¡GANASTE!' : `✅ WAVE ${this.wave + 1} CLEAR`;
-    this.showBanner(msg, () => {
+    const bonus = this.grenades*200;
+    if (bonus>0) this.addScore(bonus);
+    const isLastBoss = this.wave >= WAVES.length-1;
+    const msg = isLastBoss ? '🏆 ¡GANASTE!' : `✅ WAVE ${this.wave+1} CLEAR`;
+    this.showBanner(msg, ()=>{
       if (isLastBoss) {
         this.doVictory();
       } else {
-        this.wave++;
-        this.transitionBiome();
-        this.time.delayedCall(700, () => this.startWave());
+        this.showRelicPicker(()=>{
+          this.wave++;
+          this.transitionBiome();
+          this.time.delayedCall(700,()=>this.startWave());
+        });
       }
     }, isLastBoss ? 2500 : 1500);
   }
 
-  // ════════════════════════════════════════════════════════════════════════
-  // 🌍 TRANSICIÓN DE BIOMA
-  // ════════════════════════════════════════════════════════════════════════
+  private showBanner(text:string,onDone:()=>void,duration=1200): void {
+    const txt = this.waveBanner.getByName('bannerTxt') as Phaser.GameObjects.Text;
+    txt.setText(text);
+    this.waveBanner.setAlpha(0).setScale(0.8);
+    this.tweens.add({
+      targets:this.waveBanner, alpha:1, scaleX:1, scaleY:1, duration:300, ease:'Back.easeOut',
+      onComplete:()=>{
+        this.time.delayedCall(duration,()=>{
+          this.tweens.add({ targets:this.waveBanner, alpha:0, scaleX:1.1, scaleY:1.1, duration:300, onComplete:onDone });
+        });
+      },
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🌍  TRANSICIÓN DE BIOMA
+  // ═══════════════════════════════════════════════════════════════════════════
 
   private transitionBiome(): void {
-    this.biomeIdx = (this.biomeIdx + 1) % BIOMES.length;
+    this.biomeIdx = (this.biomeIdx+1) % BIOMES.length;
     const b = BIOMES[this.biomeIdx];
 
-    // Flash blanco de transición
-    const flash = this.add.rectangle(GW / 2, GH / 2, GW, GH, 0xffffff, 0.85).setDepth(50);
-    this.tweens.add({ targets: flash, alpha: 0, duration: 700, ease: 'Power2', onComplete: () => flash.destroy() });
+    const flash = this.add.rectangle(GW/2,GH/2,GW,GH,0xffffff,0.85).setDepth(50);
+    this.tweens.add({ targets:flash, alpha:0, duration:700, ease:'Power2', onComplete:()=>flash.destroy() });
 
-    // Aplicar paleta del nuevo bioma tras la mitad del flash
-    this.time.delayedCall(120, () => {
-      // Imágenes de fondo
-      this.bgImg.setTint(b.bgTint);
-      this.mtImg.setTint(b.bgTint);
+    this.time.delayedCall(120,()=>{
+      this.bgImg.setTint(b.bgTint); this.mtImg.setTint(b.bgTint);
+      this.skyBandRef.setFillStyle(b.sky,0.22);
+      this.horizGlowRef.setFillStyle(b.sky,0.17);
+      this.fogRects.forEach((r,i)=>r.setFillStyle(b.fog,this.fogAlphas[i]));
+      this.poolElls.forEach(e=>e.setFillStyle(b.ground,0.11));
+      this.gndG1.setFillStyle(b.ground,0.52);
+      this.gndG2.setFillStyle(b.ground,0.14);
+      this.gndG3.setFillStyle(b.ground,0.05);
 
-      // Cielo
-      this.skyBandRef.setFillStyle(b.sky, 0.22);
-      this.horizGlowRef.setFillStyle(b.sky, 0.17);
-
-      // Niebla
-      this.fogRects.forEach((r, i) => r.setFillStyle(b.fog, this.fogAlphas[i]));
-
-      // Pools de luz
-      this.poolElls.forEach(e => e.setFillStyle(b.ground, 0.11));
-
-      // Líneas del suelo
-      this.gndG1.setFillStyle(b.ground, 0.52);
-      this.gndG2.setFillStyle(b.ground, 0.14);
-      this.gndG3.setFillStyle(b.ground, 0.05);
-
-      // Partículas: recrear con nuevos colores
       this.ambientEmitter.destroy();
-      this.ambientEmitter = this.add.particles(0, 0, 'spark', {
-        x:        { min: 30,  max: GW - 30 },
-        y:        { min: 95,  max: GROUND_Y - 30 },
-        speedY:   { min: -15, max: -55 },
-        speedX:   { min: -12, max: 12 },
-        scale:    { start: 0.28, end: 0 },
-        alpha:    { start: 0.65, end: 0 },
-        lifespan: { min: 3000, max: 5500 },
-        tint:     b.pts,
-        frequency: 350,
-        gravityY:  -6,
+      this.ambientEmitter = this.add.particles(0,0,'spark',{
+        x:{min:30,max:GW-30}, y:{min:95,max:GROUND_Y-30},
+        speedY:{min:-15,max:-55}, speedX:{min:-12,max:12},
+        scale:{start:0.28,end:0}, alpha:{start:0.65,end:0},
+        lifespan:{min:3000,max:5500}, tint:b.pts,
+        frequency:350, gravityY:-6,
       }).setDepth(2.5);
 
       this.showBiomeLabel(b);
     });
   }
 
-  private showBiomeLabel(b: BiomeConfig): void {
-    const colorHex = '#' + b.ground.toString(16).padStart(6, '0');
-    const cont = this.add.container(GW / 2, GH / 2 - 30).setDepth(45).setAlpha(0).setScale(0.85);
+  private showBiomeLabel(b:BiomeConfig): void {
+    const colorHex = '#'+b.ground.toString(16).padStart(6,'0');
+    const cont = this.add.container(GW/2,GH/2-28).setDepth(45).setAlpha(0).setScale(0.85);
 
-    const bg = this.add.rectangle(0, 0, 380, 76, 0x000000, 0.84);
-    bg.setStrokeStyle(3, b.ground, 1);
-
-    const iconTxt = this.add.text(-130, 0, b.icon, {
-      fontFamily: 'monospace', fontSize: '34px',
+    const bg = this.add.rectangle(0,0,380,76,0x000000,0.84);
+    bg.setStrokeStyle(3,b.ground,1);
+    const iconTxt = this.add.text(-128,0,b.icon,{fontFamily:'monospace',fontSize:'32px'}).setOrigin(0.5);
+    const nameTxt = this.add.text(30,-13,b.name,{
+      fontFamily:'monospace',fontSize:'22px',color:colorHex,fontStyle:'bold',
     }).setOrigin(0.5);
-
-    const nameTxt = this.add.text(30, -14, b.name, {
-      fontFamily: 'monospace', fontSize: '22px', color: colorHex, fontStyle: 'bold',
+    const worldTxt= this.add.text(30,15,`MUNDO ${this.biomeIdx+1}  /  ${BIOMES.length}`,{
+      fontFamily:'monospace',fontSize:'12px',color:'#99bbdd',
     }).setOrigin(0.5);
+    cont.add([bg,iconTxt,nameTxt,worldTxt]);
 
-    const worldTxt = this.add.text(30, 16, `MUNDO ${this.biomeIdx + 1}  /  ${BIOMES.length}`, {
-      fontFamily: 'monospace', fontSize: '12px', color: '#99bbdd',
-    }).setOrigin(0.5);
-
-    cont.add([bg, iconTxt, nameTxt, worldTxt]);
-
-    // Entrada
     this.tweens.add({
-      targets: cont, alpha: 1, scaleX: 1, scaleY: 1, duration: 420, ease: 'Back.easeOut',
-      onComplete: () => {
-        this.time.delayedCall(1700, () => {
-          this.tweens.add({
-            targets: cont, alpha: 0, y: GH / 2 - 70, duration: 380, ease: 'Power2',
-            onComplete: () => cont.destroy(),
-          });
+      targets:cont, alpha:1, scaleX:1, scaleY:1, duration:420, ease:'Back.easeOut',
+      onComplete:()=>{
+        this.time.delayedCall(1700,()=>{
+          this.tweens.add({ targets:cont, alpha:0, y:GH/2-70, duration:380, ease:'Power2',
+            onComplete:()=>cont.destroy() });
         });
       },
     });
   }
 
-  private showBanner(text: string, onDone: () => void, duration = 1200): void {
-    const txt = this.waveBanner.getByName('bannerTxt') as Phaser.GameObjects.Text;
-    txt.setText(text);
-    this.waveBanner.setAlpha(0).setScale(0.8);
-    this.tweens.add({
-      targets: this.waveBanner, alpha: 1, scaleX: 1, scaleY: 1, duration: 300, ease: 'Back.easeOut',
-      onComplete: () => {
-        this.time.delayedCall(duration, () => {
-          this.tweens.add({ targets: this.waveBanner, alpha: 0, scaleX: 1.1, scaleY: 1.1,
-            duration: 300, onComplete: onDone });
-        });
-      },
-    });
-  }
-
-  // ════════════════════════════════════════════════════════════════════════
-  // 🏁 FIN DE JUEGO
-  // ════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🏁  FIN DE JUEGO
+  // ═══════════════════════════════════════════════════════════════════════════
 
   private doGameOver(): void {
-    this.state = 'game_over'; this.timerEvent?.remove(); this.enemy?.bob.stop();
+    this.state='game_over'; this.timerEvent?.remove(); this.enemy?.bob.stop();
     this.scene.stop('CRT');
-    this.cameras.main.shake(500, 0.03);
-    this.time.delayedCall(600, () => {
-      this.cameras.main.fadeOut(600, 0, 0, 0);
-      this.time.delayedCall(700, () =>
-        this.scene.start('GameOver', { score: this.score, wave: this.wave + 1, win: false }),
-      );
+    this.cameras.main.shake(500,0.03);
+    this.time.delayedCall(600,()=>{
+      this.cameras.main.fadeOut(600,0,0,0);
+      this.time.delayedCall(700,()=>
+        this.scene.start('GameOver',{score:this.score,wave:this.wave+1,win:false}));
     });
   }
 
   private doVictory(): void {
-    this.state = 'game_over'; this.scene.stop('CRT');
-    this.cameras.main.fadeOut(800, 255, 255, 200);
-    this.time.delayedCall(900, () =>
-      this.scene.start('GameOver', { score: this.score, wave: WAVES.length, win: true }),
-    );
+    this.state='game_over'; this.scene.stop('CRT');
+    this.cameras.main.fadeOut(800,255,255,200);
+    this.time.delayedCall(900,()=>
+      this.scene.start('GameOver',{score:this.score,wave:WAVES.length,win:true}));
   }
 }
