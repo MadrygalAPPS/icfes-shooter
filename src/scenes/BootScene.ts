@@ -10,6 +10,34 @@ import { C, GW, GH } from '../constants';
 export class BootScene extends Phaser.Scene {
   constructor() { super('Boot'); }
 
+  // ── Carga assets PNG reales (CC0 GothicVania) ────────────────────────────
+  preload(): void {
+    // Fondos
+    this.load.image('bg-graveyard', 'assets/bg-graveyard.png');
+    this.load.image('bg-mountains', 'assets/bg-mountains.png');
+
+    // Jugador — héroe del cementerio (frames individuales)
+    for (let i = 1; i <= 6; i++) this.load.image(`hero-run-${i}`,    `assets/hero-run-${i}.png`);
+    for (let i = 1; i <= 4; i++) this.load.image(`hero-idle-${i}`,   `assets/hero-idle-${i}.png`);
+    for (let i = 1; i <= 5; i++) this.load.image(`hero-attack-${i}`, `assets/hero-attack-${i}.png`);
+    for (let i = 1; i <= 4; i++) this.load.image(`hero-jump-${i}`,  `assets/hero-jump-${i}.png`);
+    this.load.image('hero-hurt', 'assets/hero-hurt.png');
+
+    // Enemigos (frames individuales)
+    for (let i = 1; i <= 8; i++) this.load.image(`skel-${i}`,    `assets/skel-${i}.png`);
+    for (let i = 1; i <= 8; i++) this.load.image(`skelc-${i}`,   `assets/skelc-${i}.png`);
+    for (let i = 1; i <= 4; i++) this.load.image(`ghost-${i}`,   `assets/ghost-${i}.png`);
+    for (let i = 1; i <= 4; i++) this.load.image(`hellcat-${i}`, `assets/hellcat-${i}.png`);
+
+    // Boss — Hell Beast (spritesheet 330×67, 5 frames de 66×67 cada uno)
+    this.load.spritesheet('hell-beast', 'assets/hell-beast.png', {
+      frameWidth: 66, frameHeight: 67,
+    });
+
+    // Animación de muerte de enemigo
+    for (let i = 1; i <= 5; i++) this.load.image(`edeath-${i}`, `assets/edeath-${i}.png`);
+  }
+
   create(): void {
     this.createSprites();
     this.scene.start('Menu');
