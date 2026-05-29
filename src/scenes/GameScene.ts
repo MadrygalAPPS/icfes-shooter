@@ -7,14 +7,18 @@ import {
 import { Question, getRandomQuestion, resetQuestionPool } from '../data/questions';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ⚔️  GAME SCENE — Beat-em-up quiz ICFES  v3.0
-//     + Hit-freeze · SFX · Telegrafía · Soul bar · Reliquias · Boss fases
-//     + English Rank · Dodge roll · Word echo
+// ⚔️  GAME SCENE — Beat-em-up quiz ICFES  v4.0
+//     + Clases · Meta-progresión · Enemy behaviors · Path selector
+//     + Elite questions · Panic mode · Hit-freeze · SFX · Reliquias · Boss fases
 // ═══════════════════════════════════════════════════════════════════════════════
 
-type AttackType = 'light' | 'heavy' | 'special';
-type GameState  = 'idle' | 'questioning' | 'feedback' | 'shooting'
-                | 'wave_clear' | 'game_over' | 'relic_pick';
+type AttackType    = 'light' | 'heavy' | 'special';
+type PlayerClass   = 'grammatico' | 'vocabulista' | 'lector' | 'bilingue';
+type EnemyBehavior = 'normal' | 'shielded' | 'turbo' | 'duplicator' | 'silent' | 'elite';
+type PathChoice    = 'dangerous' | 'normal' | 'safe';
+type GameState     = 'idle' | 'questioning' | 'feedback' | 'shooting'
+                   | 'wave_clear' | 'game_over' | 'relic_pick'
+                   | 'class_select' | 'path_select';
 
 // ── Física ────────────────────────────────────────────────────────────────────
 const P_GRAVITY      = 900;
@@ -32,6 +36,7 @@ const P_IFRAME_MS    = 380;          // ms de invencibilidad en dodge
 const E_CHASE_RANGE  = 180;
 const E_MELEE_RANGE  = 65;
 const E_WARN_RANGE   = 115;          // telegrafía antes de melee
+const SHIELD_FAST_MS = 4000;         // ventana para romper escudo del shielded enemy
 
 // ── Pregunta ──────────────────────────────────────────────────────────────────
 const Q_PH = 200;
@@ -44,16 +49,19 @@ const SOUL_DRAIN    = 40;
 
 // ─────────────────────────────────────────────────────────────────────────────
 interface ActiveEnemy {
-  type:      EnemyType;
-  sprite:    Phaser.GameObjects.Sprite;
-  hpCurrent: number;
-  hpMax:     number;
-  hpBg:      Phaser.GameObjects.Rectangle;
-  hpFill:    Phaser.GameObjects.Rectangle;
-  hpLabel:   Phaser.GameObjects.Text;
-  bob:       Phaser.Tweens.Tween;
-  spriteH:   number;
-  warned:    boolean;
+  type:         EnemyType;
+  sprite:       Phaser.GameObjects.Sprite;
+  hpCurrent:    number;
+  hpMax:        number;
+  hpBg:         Phaser.GameObjects.Rectangle;
+  hpFill:       Phaser.GameObjects.Rectangle;
+  hpLabel:      Phaser.GameObjects.Text;
+  bob:          Phaser.Tweens.Tween;
+  spriteH:      number;
+  warned:       boolean;
+  behavior:     EnemyBehavior;
+  isDuplicate:  boolean;
+  behaviorGlow: Phaser.GameObjects.Ellipse | null;
 }
 
 // ── Biomas ────────────────────────────────────────────────────────────────────
@@ -89,6 +97,22 @@ const RELICS: RelicConfig[] = [
   { id:'soul_leech',   name:'Maldición Vieja',   icon:'🌑',  desc:'Errores drenan 15 Alma' },
 ];
 
+// ── Meta-progresión ───────────────────────────────────────────────────────────
+const ESSENCE_KEY = 'icfes_essence';
+
+// ── Clases de personaje ───────────────────────────────────────────────────────
+interface ClassConfig { id:PlayerClass; name:string; icon:string; color:string; passive:string; desc:string; }
+const CLASSES: ClassConfig[] = [
+  { id:'grammatico', name:'El Gramático',   icon:'🗡️',  color:'#ff8844',
+    passive:'Grammar +2 DMG',    desc:'Grammar da +2 DMG.\nVocab da -1 DMG.\nEspecialista ofensivo.' },
+  { id:'vocabulista', name:'El Vocabulista', icon:'🏹',  color:'#44ffaa',
+    passive:'Vocab kill: +30 Alma', desc:'Vocab kills cargan\n+30 Alma extra.\nAgilidad en combate.' },
+  { id:'lector',     name:'El Lector',       icon:'📖', color:'#88aaff',
+    passive:'+50% tiempo Q',      desc:'Acierto ralentiza\nal enemigo 2.5s.\n+50% tiempo preguntas.' },
+  { id:'bilingue',   name:'El Bilingüe',     icon:'⚡',  color:'#ffdd55',
+    passive:'1 reliquia inicial', desc:'Empieza con 1\nreliquia aleatoria.\nEstadísticas balanceadas.' },
+];
+
 // ── Misc ──────────────────────────────────────────────────────────────────────
 const REWARD_LABELS: Record<string,string> = {
   bullet:'→ 🔫 +1 DMG', double:'→ ⚡ +2 DMG', grenade:'→ 💣 KILL', shield:'→ 🛡️ BLOCK',
@@ -110,6 +134,19 @@ export class GameScene extends Phaser.Scene {
   private enemyQueue: EnemyType[] = [];
   private enemyIdx    = 0;
   private enemy:      ActiveEnemy | null = null;
+
+  // ── Clase & meta-progresión ──────────────────────────────────────────────
+  private playerClass:       PlayerClass = 'bilingue';
+  private nextWaveModifier:  PathChoice  = 'normal';
+  private isEliteQuestion    = false;
+  private questionDuration   = QUESTION_TIME;
+  private enemySlowLeft      = 0;     // ms restantes del slow del Lector
+  private runEssence         = 0;     // esencia ganada esta corrida
+  private totalEssence       = 0;     // esencia persistente (localStorage)
+  private classBadge!:       Phaser.GameObjects.Text;
+  private essenceHud!:       Phaser.GameObjects.Text;
+  private qPanelBg!:         Phaser.GameObjects.Rectangle;
+  private qEliteBadge!:      Phaser.GameObjects.Text;
 
   // ── Stats ────────────────────────────────────────────────────────────────
   private hp           = PLAYER_MAX_HP;
@@ -221,7 +258,7 @@ export class GameScene extends Phaser.Scene {
   // ═══════════════════════════════════════════════════════════════════════════
   create(): void {
     resetQuestionPool();
-    this.state    = 'idle';
+    this.state    = 'class_select';
     this.wave     = 0;
     this.hp       = PLAYER_MAX_HP;
     this.maxHp    = PLAYER_MAX_HP;
@@ -231,6 +268,10 @@ export class GameScene extends Phaser.Scene {
     this.correctAns = 0;  this.totalAns = 0;
     this.killCount  = 0;  this.bossPhase= 0;
     this.activeRelics = []; this.comboShieldUsed = false;
+    this.runEssence = 0; this.enemySlowLeft = 0;
+    this.nextWaveModifier = 'normal'; this.isEliteQuestion = false;
+    this.questionDuration = QUESTION_TIME;
+    try { this.totalEssence = parseInt(localStorage.getItem(ESSENCE_KEY)||'0',10); } catch { this.totalEssence=0; }
     this.pX = PLAYER_X; this.pY = GROUND_Y;
     this.pVelX = 0; this.pVelY = 0;
     this.pOnGround = true; this.pFacingRight = true;
@@ -251,7 +292,9 @@ export class GameScene extends Phaser.Scene {
 
     this.scene.launch('CRT');
     this.cameras.main.fadeIn(500, 0, 0, 0);
-    this.time.delayedCall(700, () => this.startWave());
+    this.time.delayedCall(600, () => this.showClassSelector(() => {
+      this.time.delayedCall(300, () => this.startWave());
+    }));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -260,15 +303,16 @@ export class GameScene extends Phaser.Scene {
 
     if (this.state === 'questioning' && this.timerEvent) {
       this.timerElapsed += delta;
-      const pct = Math.max(0, 1 - this.timerElapsed / QUESTION_TIME);
+      const pct = Math.max(0, 1 - this.timerElapsed / this.questionDuration);
       this.qTimerBar.width = Math.max(0, (GW - 8) * pct);
       if      (pct < 0.3) this.qTimerBar.setFillStyle(C.WRONG);
       else if (pct < 0.6) this.qTimerBar.setFillStyle(0xffaa00);
-      else                this.qTimerBar.setFillStyle(C.PANEL_BORDER);
+      else                this.qTimerBar.setFillStyle(this.isEliteQuestion ? 0xffcc00 : C.PANEL_BORDER);
     }
 
     const dt = delta / 1000;
-    if (this.pIframeLeft > 0) this.pIframeLeft -= delta;
+    if (this.pIframeLeft > 0)   this.pIframeLeft   -= delta;
+    if (this.enemySlowLeft > 0) this.enemySlowLeft -= delta;
     this.updatePlayer(dt);
     this.updateEnemy(dt);
   }
@@ -382,10 +426,21 @@ export class GameScene extends Phaser.Scene {
     }).setOrigin(1,0).setDepth(11);
 
     // Rank badge MCER
-    this.rankBadge = this.add.text(GW/2, 32, '🎓 A-', {
+    this.rankBadge = this.add.text(GW/2+55, 32, '🎓 A-', {
       fontFamily:'monospace', fontSize:'11px', color:'#ff6644',
       backgroundColor:'#001422', padding:{x:6,y:2},
     }).setOrigin(0.5).setDepth(11);
+
+    // Clase del personaje
+    this.classBadge = this.add.text(GW/2-55, 32, '⚡ Bilingüe', {
+      fontFamily:'monospace', fontSize:'11px', color:'#ffdd55',
+      backgroundColor:'#1a1200', padding:{x:6,y:2},
+    }).setOrigin(0.5).setDepth(11);
+
+    // Esencia acumulada (meta-progresión)
+    this.essenceHud = this.add.text(GW-12, 33, `✨ ${this.totalEssence}`, {
+      fontFamily:'monospace', fontSize:'10px', color:'#aaddff',
+    }).setOrigin(1, 0.5).setDepth(11);
 
     // Grenades + shield
     this.grenadeIcon = this.add.text(20,42,`💣 ${this.grenades}`,{
@@ -427,7 +482,8 @@ export class GameScene extends Phaser.Scene {
   private buildQuestionPanel(): void {
     this.qPanel = this.add.container(GW/2, Q_PY).setDepth(20).setVisible(false);
 
-    const bg     = this.add.rectangle(0,0,GW,Q_PH,0x020c1a,0.97);
+    this.qPanelBg = this.add.rectangle(0,0,GW,Q_PH,0x020c1a,0.97);
+    const bg     = this.qPanelBg;
     const topBar = this.add.rectangle(0,-Q_PH/2+2,GW,4,C.PANEL_BORDER);
     this.tweens.add({ targets:topBar, alpha:{from:1,to:0.25}, duration:900, yoyo:true, repeat:-1 });
 
@@ -448,8 +504,13 @@ export class GameScene extends Phaser.Scene {
       align:'center', wordWrap:{width:GW-24},
     }).setOrigin(0.5,0);
 
+    this.qEliteBadge = this.add.text(0,-Q_PH/2+38,'',{
+      fontFamily:'monospace', fontSize:'10px', color:'#ffcc00',
+      backgroundColor:'#1a1000', padding:{x:6,y:2},
+    }).setOrigin(0.5,0).setVisible(false);
+
     const sep = this.add.rectangle(0,-Q_PH/2+96,GW-16,1,0x0d2040);
-    this.qPanel.add([bg,topBar,timerBg,this.qTimerBar,this.qTypeBadge,this.qReward,this.qText,sep]);
+    this.qPanel.add([bg,topBar,timerBg,this.qTimerBar,this.qTypeBadge,this.qReward,this.qText,this.qEliteBadge,sep]);
 
     const BW=396, BH=42;
     const colX:[number,number] = [-200,200];
@@ -560,7 +621,9 @@ export class GameScene extends Phaser.Scene {
   // ═══════════════════════════════════════════════════════════════════════════
 
   private updatePlayer(dt: number): void {
-    const frozen = this.state === 'questioning' || this.state === 'feedback' || this.state === 'relic_pick';
+    const frozen = this.state === 'questioning' || this.state === 'feedback'
+                || this.state === 'relic_pick'  || this.state === 'class_select'
+                || this.state === 'path_select';
 
     // ── Cooldowns ───────────────────────────────────────────────────────────
     if (!this.pCanDash) {
@@ -704,25 +767,27 @@ export class GameScene extends Phaser.Scene {
 
   private updateEnemy(dt: number): void {
     if (!this.enemy) return;
-    const { sprite, hpBg, hpFill, hpLabel, spriteH } = this.enemy;
+    const { sprite, hpBg, hpFill, hpLabel, spriteH, behavior } = this.enemy;
     const dx    = this.pX - sprite.x;
     const absDx = Math.abs(dx);
     const dir   = dx > 0 ? 1 : -1;
 
-    // Velocidad según fase del boss
+    // Velocidad según fase del boss + behavior
     let speed = ENEMY_STATS[this.enemy.type].speed;
     if (this.enemy.type === 'boss') {
       if      (this.bossPhase >= 2) speed *= 2.5;
       else if (this.bossPhase >= 1) speed *= 1.6;
     }
+    if (behavior === 'turbo')            speed *= 1.9;   // Turbo: casi el doble
+    if (this.enemySlowLeft > 0)          speed *= 0.30;  // Lector class slow
 
     if (this.state === 'idle' && absDx > E_MELEE_RANGE) {
       sprite.x += dir * speed * dt;
       sprite.setFlipX(dx < 0);
     }
 
-    // Telegrafía de ataque — flash rojo + ⚠️
-    if (!this.enemy.warned && absDx <= E_WARN_RANGE && this.state === 'idle') {
+    // Telegrafía de ataque — flash rojo + ⚠️ (silent se salta)
+    if (behavior !== 'silent' && !this.enemy.warned && absDx <= E_WARN_RANGE && this.state === 'idle') {
       this.enemy.warned = true;
       sprite.setTint(0xff2200);
       this.time.delayedCall(100, ()=>{ if(this.enemy) sprite.clearTint(); });
@@ -740,6 +805,10 @@ export class GameScene extends Phaser.Scene {
     hpBg.setPosition(sprite.x, barY);
     hpLabel.setPosition(sprite.x, barY-10);
     hpFill.setPosition(sprite.x-26, barY);
+    // Mover glow de behavior
+    if (this.enemy.behaviorGlow) {
+      this.enemy.behaviorGlow.setPosition(sprite.x, sprite.y - spriteH/2);
+    }
     this.atkHint.setVisible(absDx <= E_CHASE_RANGE && this.state === 'idle');
   }
 
@@ -766,7 +835,19 @@ export class GameScene extends Phaser.Scene {
 
   private startWave(): void {
     const waveData = WAVES[this.wave % WAVES.length];
-    this.enemyQueue = [...waveData]; this.enemyIdx = 0;
+    this.enemyQueue = [...waveData];
+
+    // Camino peligroso: +2 enemigos aleatorios extra
+    if (this.nextWaveModifier === 'dangerous') {
+      const extras: EnemyType[] = ['zombie','skeleton','vampire'];
+      this.enemyQueue.push(
+        extras[Math.floor(Math.random()*extras.length)],
+        extras[Math.floor(Math.random()*extras.length)],
+      );
+    }
+    this.nextWaveModifier = 'normal'; // reset
+    this.enemyIdx = 0;
+
     const label = this.wave < WAVES.length
       ? (this.wave === 4 || this.wave === 7 ? '⚡ BOSS !' : `WAVE ${this.wave+1}`)
       : `WAVE ${this.wave+1}`;
@@ -779,6 +860,17 @@ export class GameScene extends Phaser.Scene {
     const type  = this.enemyQueue[this.enemyIdx++];
     const stats = ENEMY_STATS[type];
 
+    // Asignar behavior (wave 1+, non-boss, 35% chance)
+    let behavior: EnemyBehavior = 'normal';
+    if (type !== 'boss' && this.wave >= 1) {
+      const roll = Math.random();
+      if      (roll < 0.10) behavior = 'shielded';
+      else if (roll < 0.20) behavior = 'turbo';
+      else if (roll < 0.28) behavior = 'duplicator';
+      else if (roll < 0.35) behavior = 'silent';
+      else if (roll < 0.42 && this.wave >= 3) behavior = 'elite';
+    }
+
     const animKey    = type==='boss'?'boss_fly':type==='vampire'?'vampire_float':type==='golem'?'golem_stomp':type==='skeleton'?'skeleton_walk':'zombie_walk';
     const firstTex   = type==='boss'?'hell-beast':type==='vampire'?'ghost-1':type==='golem'?'hellcat-1':type==='skeleton'?'skelc-1':'skel-1';
     const spriteH    = type==='boss'?134:type==='vampire'?65:type==='golem'?53:52;
@@ -788,17 +880,49 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5,1).setDepth(8).setFlipX(true).setScale(spriteScale);
     sprite.play(animKey);
 
+    // Tints por behavior
+    if (behavior === 'turbo')      sprite.setTint(0xffee44);
+    if (behavior === 'elite')      sprite.setTint(0xdd88ff);
+    if (behavior === 'duplicator') sprite.setTint(0x44ffcc);
+    if (behavior === 'silent')     sprite.setTint(0x8888aa);
+
+    const behaviorSuffix: Record<EnemyBehavior,string> = {
+      normal:'', shielded:' 🛡️', turbo:' ⚡', duplicator:' 👥', silent:' 🔇', elite:' 💎',
+    };
     const barY   = GROUND_Y - spriteH - 10;
     const hpBg   = this.add.rectangle(SPAWN_X, barY, 56, 8, 0x333333).setDepth(9);
     const hpFill = this.add.rectangle(SPAWN_X-26, barY, 52, 6, 0x00ff44).setOrigin(0,0.5).setDepth(9);
-    const hpLabel= this.add.text(SPAWN_X, barY-10, stats.label, {
+    const hpLabel= this.add.text(SPAWN_X, barY-10, stats.label+behaviorSuffix[behavior], {
       fontFamily:'monospace', fontSize:'11px', color:'#'+stats.color.toString(16).padStart(6,'0'),
     }).setOrigin(0.5).setDepth(9);
 
+    // Glow visual para shielded
+    let behaviorGlow: Phaser.GameObjects.Ellipse | null = null;
+    if (behavior === 'shielded') {
+      behaviorGlow = this.add.ellipse(SPAWN_X, GROUND_Y - spriteH/2, 80, 120, 0x4488ff, 0.18)
+        .setDepth(7.5).setStrokeStyle(2, 0x4488ff, 0.9);
+      this.tweens.add({ targets:behaviorGlow, alpha:{from:0.18,to:0.04}, scaleX:{from:1,to:1.2},
+        duration:700, yoyo:true, repeat:-1 });
+    }
+
     const bob = this.tweens.add({ targets:sprite, y:GROUND_Y-5, duration:380, yoyo:true, repeat:-1 });
-    this.enemy = { type, sprite, hpCurrent:stats.hp, hpMax:stats.hp, hpBg, hpFill, hpLabel, bob, spriteH, warned:false };
+    this.enemy = { type, sprite, hpCurrent:stats.hp, hpMax:stats.hp, hpBg, hpFill, hpLabel, bob,
+      spriteH, warned:false, behavior, isDuplicate:false, behaviorGlow };
     this.bossPhase = 0;
     this.state = 'idle';
+
+    // Label de behavior al aparecer
+    if (behavior !== 'normal') {
+      const bLabels: Record<EnemyBehavior,string> = {
+        normal:'', shielded:'🛡️ ESCUDADO', turbo:'⚡ TURBO',
+        duplicator:'👥 DUPLICADOR', silent:'🔇 SILENCIOSO', elite:'💎 ÉLITE',
+      };
+      const bColors: Record<EnemyBehavior,number> = {
+        normal:0xffffff, shielded:0x4488ff, turbo:0xffee44,
+        duplicator:0x44ffcc, silent:0x8888aa, elite:0xdd88ff,
+      };
+      this.showFloatingText(SPAWN_X, GROUND_Y - spriteH - 30, bLabels[behavior], bColors[behavior]);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -809,6 +933,17 @@ export class GameScene extends Phaser.Scene {
     if (this.state === 'game_over') return;
     this.state    = 'questioning';
     this.currentQ = getRandomQuestion(this.enemy?.type === 'boss');
+
+    // Elite question chance (enemy élite = 65%, boss berserker = 35%, otherwise 18%)
+    const eliteChance = this.enemy?.behavior === 'elite' ? 0.65
+      : this.bossPhase >= 2 ? 0.35 : 0.18;
+    this.isEliteQuestion = Math.random() < eliteChance;
+
+    // questionDuration: boss berserker = 40% tiempo (pánico), Lector = +50%
+    let dur = QUESTION_TIME;
+    if (this.bossPhase >= 2) dur *= 0.4;
+    if (this.playerClass === 'lector') dur *= 1.5;
+    this.questionDuration = dur;
 
     if (playerInitiated) {
       const rewardMap: Record<AttackType,'bullet'|'double'|'grenade'> = {
@@ -825,10 +960,26 @@ export class GameScene extends Phaser.Scene {
     const typeColors: Record<string,string> = { vocab:'#00eeff', grammar:'#ffee33', bonus:'#ff88ff' };
     const typeLbls:  Record<string,string>  = { vocab:'📖 VOCAB', grammar:'✍️ GRAMMAR', bonus:'⚡ BONUS' };
 
-    this.qTypeBadge.setText(typeLbls[q.type] ?? q.type.toUpperCase());
-    this.qTypeBadge.setColor(typeColors[q.type] ?? '#ffffff');
+    const prefix = this.isEliteQuestion ? '💎 ' : '';
+    this.qTypeBadge.setText(prefix+(typeLbls[q.type] ?? q.type.toUpperCase()));
+    this.qTypeBadge.setColor(this.isEliteQuestion ? '#ffcc00' : (typeColors[q.type] ?? '#ffffff'));
     this.qReward.setText(REWARD_LABELS[q.reward] ?? '');
     this.qText.setText(q.text);
+
+    // Elite / pánico / shielded badge
+    if (this.isEliteQuestion) {
+      this.qEliteBadge.setText('💎 ÉLITE — Acierto: ×2 DMG  |  Fallo: ×2 DAÑO').setColor('#ffcc00').setVisible(true);
+      this.qPanelBg.setStrokeStyle(3, 0xffcc00, 1.0);
+    } else if (this.bossPhase >= 2) {
+      this.qEliteBadge.setText('⚠️ MODO PÁNICO — 40% TIEMPO').setColor('#ff4400').setVisible(true);
+      this.qPanelBg.setStrokeStyle(3, 0xff4400, 1.0);
+    } else if (this.enemy?.behavior === 'shielded') {
+      this.qEliteBadge.setText('🛡️ RESPONDE EN 4s PARA ROMPER EL ESCUDO').setColor('#4488ff').setVisible(true);
+      this.qPanelBg.setStrokeStyle(2, 0x4488ff, 0.8);
+    } else {
+      this.qEliteBadge.setVisible(false);
+      this.qPanelBg.setStrokeStyle(0);
+    }
 
     q.opts.forEach((opt,i) => {
       this.qBtnLabels[i].setText(opt);
@@ -838,11 +989,11 @@ export class GameScene extends Phaser.Scene {
 
     this.timerElapsed = 0;
     this.qTimerBar.width = GW-8;
-    this.qTimerBar.setFillStyle(C.PANEL_BORDER);
+    this.qTimerBar.setFillStyle(this.isEliteQuestion ? 0xffcc00 : C.PANEL_BORDER);
 
     this.qPanel.setVisible(true).setAlpha(0).setY(GH+Q_PH/2);
     this.tweens.add({ targets:this.qPanel, alpha:1, y:Q_PY, duration:320, ease:'Back.easeOut' });
-    this.timerEvent = this.time.delayedCall(QUESTION_TIME, ()=>this.onTimeout());
+    this.timerEvent = this.time.delayedCall(this.questionDuration, ()=>this.onTimeout());
   }
 
   private hideQuestion(): void {
@@ -904,12 +1055,36 @@ export class GameScene extends Phaser.Scene {
       });
     }
 
-    // Calcular daño y tipo con reliquias
+    // Calcular daño y tipo con reliquias + clase + elite
     let reward = q.reward as string;
     let dmg    = reward === 'double' ? 2 : 1;
     if (this.hasRelic('grammar_dmg') && q.type==='grammar') dmg++;
     if (this.hasRelic('twin_shot')   && reward==='bullet')  { reward='double'; dmg=2; }
     if (this.enemy?.type==='boss' && this.hasRelic('boss_breaker')) dmg+=2;
+
+    // ── Pasivas de clase ──────────────────────────────────────────────────
+    if (this.playerClass === 'grammatico') {
+      if (q.type === 'grammar') dmg += 2;
+      if (q.type === 'vocab')   dmg  = Math.max(0, dmg - 1);
+    }
+    if (this.playerClass === 'lector' && this.enemy) {
+      this.enemySlowLeft = 2500;
+      this.showFloatingText(this.enemy.sprite.x, this.enemy.sprite.y-55, '📖 RALENTIZADO', 0x88aaff);
+    }
+
+    // ── Pregunta élite: ×2 daño ───────────────────────────────────────────
+    if (this.isEliteQuestion) {
+      dmg *= 2;
+      this.showFloatingText(this.enemy?.sprite.x ?? GW/2,
+        (this.enemy?.sprite.y ?? 200)-70, '💎 ×2 DMG!', 0xffcc00);
+    }
+
+    // ── Shielded: escudo roto si respuesta rápida ─────────────────────────
+    if (this.enemy?.behavior === 'shielded' && this.timerElapsed <= SHIELD_FAST_MS) {
+      this.enemy.behaviorGlow?.destroy();
+      this.enemy.behaviorGlow = null;
+      this.showFloatingText(this.enemy.sprite.x, this.enemy.sprite.y-55, '🛡️ ESCUDO ROTO!', 0x4488ff);
+    }
 
     if      (reward==='grenade') { this.fireGrenade(); }
     else if (reward==='shield')  { this.activateShield(); this.addScore(150+comboBonus); this.time.delayedCall(300,()=>this.afterShot()); }
@@ -936,6 +1111,15 @@ export class GameScene extends Phaser.Scene {
     this.updateEnglishRank();
 
     this.playerHit();
+    // Elite: doble castigo (segundo hit si sigue vivo)
+    if (this.isEliteQuestion && this.state !== 'game_over') {
+      this.time.delayedCall(150, () => {
+        if (this.state !== 'game_over') {
+          this.showFloatingText(this.pX, this.pY-80, '💎 ×2 DAÑO!', 0xff4400);
+          this.playerHit();
+        }
+      });
+    }
     if (this.state !== 'game_over' && this.enemy) {
       const pushDir = this.enemy.sprite.x > this.pX ? 1 : -1;
       this.enemy.sprite.x += pushDir * 90;
@@ -1109,6 +1293,26 @@ export class GameScene extends Phaser.Scene {
     if (this.currentQ?.type==='vocab') {
       this.showWordEcho(this.currentQ.opts[this.currentQ.ans], ex, ey);
     }
+
+    // Vocabulista: +30 Alma al matar con vocab
+    if (this.playerClass === 'vocabulista' && this.currentQ?.type === 'vocab') {
+      this.soul = Math.min(SOUL_MAX, this.soul + 30);
+      this.updateSoulBar();
+      this.showFloatingText(ex, ey-55, '🏹 +30 ALMA', 0x44ffaa);
+    }
+
+    // Duplicador: insertar 2 zombies en la cola al morir (si no es ya un duplicado)
+    if (this.enemy && !this.enemy.isDuplicate && this.enemy.behavior === 'duplicator') {
+      const dupeType: EnemyType = 'zombie';
+      this.enemyQueue.splice(this.enemyIdx, 0, dupeType, dupeType);
+      this.showFloatingText(ex, ey-70, '👥 ¡SE DIVIDE!', 0x44ffcc);
+    }
+
+    // Destruir glow de behavior
+    this.enemy?.behaviorGlow?.destroy();
+
+    // Esencia por kill
+    this.addRunEssence(type === 'boss' ? 10 : 2);
 
     this.hitFreeze(80);
 
@@ -1368,17 +1572,17 @@ export class GameScene extends Phaser.Scene {
 
   private hasRelic(id:string): boolean { return this.activeRelics.includes(id); }
 
-  private showRelicPicker(onDone:()=>void): void {
+  private showRelicPicker(onDone:()=>void, count=3): void {
     this.state = 'relic_pick';
 
     const available = RELICS.filter(r=>!this.activeRelics.includes(r.id));
-    const pool = (Phaser.Utils.Array.Shuffle([...available]) as RelicConfig[]).slice(0,3);
-    while (pool.length<3) pool.push(RELICS[Math.floor(Math.random()*RELICS.length)]);
+    const pool = (Phaser.Utils.Array.Shuffle([...available]) as RelicConfig[]).slice(0,count);
+    while (pool.length < count) pool.push(RELICS[Math.floor(Math.random()*RELICS.length)]);
 
     const overlay = this.add.rectangle(GW/2,GH/2,GW,GH,0x000000,0.84).setDepth(40);
     const cont    = this.add.container(0,0).setDepth(41);
 
-    const titleTxt = this.add.text(GW/2,78,'✨ ELIGE UNA RELIQUIA',{
+    const titleTxt = this.add.text(GW/2,78,count>3?'✨ ELIGE UNA RELIQUIA  🔴 ×5':'✨ ELIGE UNA RELIQUIA',{
       fontFamily:'monospace', fontSize:'22px', color:'#ffdd55', fontStyle:'bold',
     }).setOrigin(0.5);
     const subTxt = this.add.text(GW/2,108,'Completaste la ola — escoge tu recompensa.',{
@@ -1386,8 +1590,11 @@ export class GameScene extends Phaser.Scene {
     }).setOrigin(0.5);
     cont.add([titleTxt, subTxt]);
 
-    const cardXs = [GW/2-252, GW/2, GW/2+252];
-    const CW=208, CH=175;
+    const CW = count > 3 ? 148 : 208;
+    const CH = 175;
+    const spacing = count > 3 ? 157 : 252;
+    const startX  = GW/2 - spacing * (count-1) / 2;
+    const cardXs  = Array.from({length:count}, (_,i) => startX + i * spacing);
 
     pool.forEach((relic,i)=>{
       const cx=cardXs[i], cy=GH/2+14;
@@ -1447,16 +1654,34 @@ export class GameScene extends Phaser.Scene {
     this.state = 'wave_clear';
     const bonus = this.grenades*200;
     if (bonus>0) this.addScore(bonus);
+    this.addRunEssence(5); // esencia por oleada completada
+
     const isLastBoss = this.wave >= WAVES.length-1;
     const msg = isLastBoss ? '🏆 ¡GANASTE!' : `✅ WAVE ${this.wave+1} CLEAR`;
     this.showBanner(msg, ()=>{
       if (isLastBoss) {
         this.doVictory();
       } else {
-        this.showRelicPicker(()=>{
-          this.wave++;
-          this.transitionBiome();
-          this.time.delayedCall(700,()=>this.startWave());
+        this.showPathSelector((path) => {
+          if (path === 'safe') {
+            // Sala segura: recuperar HP + Alma, sin relic
+            this.hp = Math.min(this.hp + 1, this.maxHp);
+            this.soul = Math.min(SOUL_MAX, this.soul + 25);
+            this.updateHearts(); this.updateSoulBar();
+            this.showFloatingText(GW/2, GH/2-10, '🟢 +1 HP · +25 ALMA', 0x44ff88);
+            this.time.delayedCall(900, ()=>{
+              this.wave++;
+              this.transitionBiome();
+              this.time.delayedCall(700,()=>this.startWave());
+            });
+          } else {
+            const relicCount = path === 'dangerous' ? 5 : 3;
+            this.showRelicPicker(()=>{
+              this.wave++;
+              this.transitionBiome();
+              this.time.delayedCall(700,()=>this.startWave());
+            }, relicCount);
+          }
         });
       }
     }, isLastBoss ? 2500 : 1500);
@@ -1542,19 +1767,160 @@ export class GameScene extends Phaser.Scene {
 
   private doGameOver(): void {
     this.state='game_over'; this.timerEvent?.remove(); this.enemy?.bob.stop();
+    this.saveEssence();
     this.scene.stop('CRT');
     this.cameras.main.shake(500,0.03);
     this.time.delayedCall(600,()=>{
       this.cameras.main.fadeOut(600,0,0,0);
       this.time.delayedCall(700,()=>
-        this.scene.start('GameOver',{score:this.score,wave:this.wave+1,win:false}));
+        this.scene.start('GameOver',{score:this.score,wave:this.wave+1,win:false,essence:this.runEssence}));
     });
   }
 
   private doVictory(): void {
-    this.state='game_over'; this.scene.stop('CRT');
+    this.state='game_over';
+    this.addRunEssence(25); // bonus por victoria
+    this.saveEssence();
+    this.scene.stop('CRT');
     this.cameras.main.fadeOut(800,255,255,200);
     this.time.delayedCall(900,()=>
-      this.scene.start('GameOver',{score:this.score,wave:WAVES.length,win:true}));
+      this.scene.start('GameOver',{score:this.score,wave:WAVES.length,win:true,essence:this.runEssence}));
+  }
+
+  private addRunEssence(amount: number): void {
+    this.runEssence += amount;
+    this.essenceHud.setText(`✨ ${this.totalEssence + this.runEssence}`);
+  }
+
+  private saveEssence(): void {
+    try {
+      const saved = parseInt(localStorage.getItem(ESSENCE_KEY)||'0',10);
+      localStorage.setItem(ESSENCE_KEY, String(saved + this.runEssence));
+    } catch { /* noop */ }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🎭  SELECTOR DE CLASE
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private showClassSelector(onDone: ()=>void): void {
+    this.state = 'class_select';
+    const overlay = this.add.rectangle(GW/2,GH/2,GW,GH,0x000000,0.93).setDepth(40);
+    const cont    = this.add.container(0,0).setDepth(41);
+
+    const title = this.add.text(GW/2, 48, '⚔️  ELIGE TU CLASE', {
+      fontFamily:'monospace', fontSize:'26px', color:'#ffffff', fontStyle:'bold',
+      stroke:'#00ff44', strokeThickness:2,
+    }).setOrigin(0.5);
+    const sub   = this.add.text(GW/2, 82, 'Cada clase cambia tu estilo de juego para toda la corrida.', {
+      fontFamily:'monospace', fontSize:'11px', color:'#88aacc',
+    }).setOrigin(0.5);
+    const essLine = this.add.text(GW/2, 100, `✨ Esencia acumulada: ${this.totalEssence}`, {
+      fontFamily:'monospace', fontSize:'10px', color:'#aaddff',
+    }).setOrigin(0.5);
+    cont.add([title, sub, essLine]);
+
+    const CW = 148, CH = 195;
+    const spacing = 160;
+    const startX  = GW/2 - spacing * (CLASSES.length - 1) / 2;
+
+    CLASSES.forEach((cls, i) => {
+      const cx = startX + i * spacing;
+      const cy = GH/2 + 35;
+      const col = parseInt(cls.color.replace('#',''), 16);
+
+      const card = this.add.rectangle(cx, cy, CW, CH, 0x020c1a, 0.96)
+        .setInteractive({useHandCursor:true});
+      card.setStrokeStyle(2, col, 0.7);
+
+      const iconT  = this.add.text(cx, cy-75, cls.icon,  {fontFamily:'monospace',fontSize:'32px'}).setOrigin(0.5);
+      const nameT  = this.add.text(cx, cy-36, cls.name,  {fontFamily:'monospace',fontSize:'12px',color:cls.color,fontStyle:'bold',wordWrap:{width:CW-14},align:'center'}).setOrigin(0.5);
+      const passT  = this.add.text(cx, cy-8,  cls.passive,{fontFamily:'monospace',fontSize:'10px',color:'#ffdd55',wordWrap:{width:CW-14},align:'center'}).setOrigin(0.5);
+      const descT  = this.add.text(cx, cy+38, cls.desc,  {fontFamily:'monospace',fontSize:'9px', color:'#88aacc',wordWrap:{width:CW-14},align:'center'}).setOrigin(0.5);
+
+      card.on('pointerover',  ()=>{ card.setFillStyle(0x0a2040,0.98); card.setStrokeStyle(3,col,1); this.tweens.add({targets:[iconT,nameT],scaleX:1.08,scaleY:1.08,duration:100}); });
+      card.on('pointerout',   ()=>{ card.setFillStyle(0x020c1a,0.96); card.setStrokeStyle(2,col,0.7); this.tweens.add({targets:[iconT,nameT],scaleX:1,scaleY:1,duration:100}); });
+      card.on('pointerdown',  ()=>{
+        this.playerClass = cls.id;
+        this.classBadge.setText(`${cls.icon} ${cls.name.replace('El ','')}`).setColor(cls.color);
+        this.playBeep('relic');
+        // Bilingüe: 1 reliquia inicial
+        if (cls.id === 'bilingue') {
+          const avail = RELICS.filter(r=>!this.activeRelics.includes(r.id));
+          const startRelic = avail[Math.floor(Math.random()*avail.length)];
+          if (startRelic) {
+            this.time.delayedCall(300, ()=>this.applyRelic(startRelic));
+          }
+        }
+        this.tweens.add({targets:card,scaleX:1.1,scaleY:1.1,duration:120,yoyo:true});
+        this.time.delayedCall(380, ()=>{
+          this.tweens.add({targets:[overlay,cont],alpha:0,duration:300,ease:'Power2',
+            onComplete:()=>{ overlay.destroy(); cont.destroy(); onDone(); }});
+        });
+      });
+
+      cont.add([card, iconT, nameT, passT, descT]);
+    });
+
+    cont.setAlpha(0).setY(30);
+    this.tweens.add({targets:cont, alpha:1, y:0, duration:450, ease:'Back.easeOut'});
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🗺️  SELECTOR DE CAMINO
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private showPathSelector(onDone: (p:PathChoice)=>void): void {
+    this.state = 'path_select';
+    const overlay = this.add.rectangle(GW/2,GH/2,GW,GH,0x000000,0.85).setDepth(40);
+    const cont    = this.add.container(0,0).setDepth(41);
+
+    const title = this.add.text(GW/2, 78, '🗺️  ELIGE TU CAMINO', {
+      fontFamily:'monospace', fontSize:'22px', color:'#ffffff', fontStyle:'bold',
+    }).setOrigin(0.5);
+    const sub   = this.add.text(GW/2, 106, 'Cada oleada decides tu destino.', {
+      fontFamily:'monospace', fontSize:'11px', color:'#88aacc',
+    }).setOrigin(0.5);
+    cont.add([title, sub]);
+
+    type PathDef = {choice:PathChoice; icon:string; title:string; desc:string; col:number;};
+    const paths: PathDef[] = [
+      {choice:'dangerous', icon:'🔴', title:'PELIGROSO', col:0xff3322,
+       desc:'+2 enemigos extra.\n5 reliquias ofrecidas.\nAlto riesgo, alta recompensa.'},
+      {choice:'normal',    icon:'🟡', title:'NORMAL',    col:0xffcc22,
+       desc:'Oleada estándar.\n3 reliquias ofrecidas.\nFlujo habitual.'},
+      {choice:'safe',      icon:'🟢', title:'SALA SEGURA', col:0x44ff88,
+       desc:'Sin combate.\n+1 HP · +25 Alma.\nSin reliquia ofrecida.'},
+    ];
+
+    const CW=190, CH=185, spacing=220;
+    const startX = GW/2 - spacing*(paths.length-1)/2;
+
+    paths.forEach((p,i) => {
+      const cx = startX + i * spacing, cy = GH/2 + 28;
+      const card = this.add.rectangle(cx,cy,CW,CH,0x020c1a,0.96).setInteractive({useHandCursor:true});
+      card.setStrokeStyle(2,p.col,0.7);
+
+      const iconT  = this.add.text(cx, cy-68, p.icon,  {fontFamily:'monospace',fontSize:'36px'}).setOrigin(0.5);
+      const titleT = this.add.text(cx, cy-26, p.title, {fontFamily:'monospace',fontSize:'13px',color:'#'+p.col.toString(16).padStart(6,'0'),fontStyle:'bold',wordWrap:{width:CW-14},align:'center'}).setOrigin(0.5);
+      const descT  = this.add.text(cx, cy+28, p.desc,  {fontFamily:'monospace',fontSize:'10px',color:'#aabbcc',wordWrap:{width:CW-18},align:'center'}).setOrigin(0.5);
+
+      card.on('pointerover',  ()=>{ card.setFillStyle(0x0a2040,0.98); card.setStrokeStyle(3,p.col,1); this.tweens.add({targets:[iconT,titleT],scaleX:1.08,scaleY:1.08,duration:100}); });
+      card.on('pointerout',   ()=>{ card.setFillStyle(0x020c1a,0.96); card.setStrokeStyle(2,p.col,0.7); this.tweens.add({targets:[iconT,titleT],scaleX:1,scaleY:1,duration:100}); });
+      card.on('pointerdown',  ()=>{
+        this.nextWaveModifier = p.choice;
+        this.playBeep('correct');
+        this.tweens.add({targets:card,scaleX:1.08,scaleY:1.08,duration:120,yoyo:true});
+        this.time.delayedCall(350,()=>{
+          this.tweens.add({targets:[overlay,cont],alpha:0,duration:280,ease:'Power2',
+            onComplete:()=>{ overlay.destroy(); cont.destroy(); onDone(p.choice); }});
+        });
+      });
+
+      cont.add([card, iconT, titleT, descT]);
+    });
+
+    cont.setAlpha(0).setY(28);
+    this.tweens.add({targets:cont, alpha:1, y:0, duration:380, ease:'Back.easeOut'});
   }
 }
