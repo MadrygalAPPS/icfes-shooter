@@ -5,17 +5,23 @@ import { GW, GH } from '../constants';
 // 💀 GAME OVER SCENE — Pantalla de fin de juego
 // =====================================================
 interface GOData {
-  score: number;
-  hi: number;
-  wave: number;
-  won: boolean;
+  score:   number;
+  hi?:     number;
+  wave:    number;
+  won?:    boolean;
+  win?:    boolean;   // alias enviado desde GameScene
+  essence?:number;   // esencia ganada esta run
 }
 
 export class GameOverScene extends Phaser.Scene {
   constructor() { super('GameOver'); }
 
   create(data: GOData): void {
-    const { score = 0, hi = 0, wave = 1, won = false } = data ?? {};
+    const score   = data?.score   ?? 0;
+    const hi      = data?.hi      ?? 0;
+    const wave    = data?.wave    ?? 1;
+    const won     = data?.won     ?? data?.win ?? false;  // fix alias win/won
+    const essence = data?.essence ?? 0;
     const isNewHi = score > 0 && score >= hi;
 
     // ── Fondo ──────────────────────────────────────────────────────────────
@@ -49,7 +55,7 @@ export class GameOverScene extends Phaser.Scene {
     this.add.rectangle(GW / 2, GH / 2, GW, GH, 0x000000, 0.55);
 
     // ── Panel central ──────────────────────────────────────────────────────
-    const panelH = 320;
+    const panelH = 360;
     const panel = this.add.rectangle(GW / 2, GH / 2 - 10, 540, panelH, 0x050518, 0.95);
     panel.setStrokeStyle(3, won ? 0x00ff88 : 0xff3333);
     panel.setAlpha(0);
@@ -108,9 +114,10 @@ export class GameOverScene extends Phaser.Scene {
 
     // Contenedor de stats
     const statsData = [
-      { label: '⭐ PUNTAJE',      value: score.toLocaleString(),   color: '#ffee33' },
-      { label: '🌊 OLEADA',       value: `${wave}`,                 color: '#33ccff' },
-      { label: '🏅 HIGH SCORE',   value: hi.toLocaleString(),       color: '#ff9900' },
+      { label: '⭐ PUNTAJE',        value: score.toLocaleString(),                  color: '#ffee33' },
+      { label: '🌊 OLEADA',         value: `${wave}`,                               color: '#33ccff' },
+      { label: '🏅 HIGH SCORE',     value: hi.toLocaleString(),                     color: '#ff9900' },
+      { label: '✨ ESENCIA GANADA', value: `+${essence}  (total próxima run)`,       color: '#aaddff' },
     ];
 
     statsData.forEach((s, i) => {
@@ -159,7 +166,7 @@ export class GameOverScene extends Phaser.Scene {
     }
 
     // ── Botones ───────────────────────────────────────────────────────────────
-    const btnY = GH / 2 + 120;
+    const btnY = GH / 2 + 148;
 
     // Botón PLAY AGAIN
     const btnPlay = this.add.rectangle(GW / 2 - 115, btnY, 200, 48, 0x003300).setAlpha(0);

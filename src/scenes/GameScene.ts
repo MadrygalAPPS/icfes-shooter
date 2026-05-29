@@ -98,7 +98,18 @@ const RELICS: RelicConfig[] = [
 ];
 
 // ── Meta-progresión ───────────────────────────────────────────────────────────
-const ESSENCE_KEY = 'icfes_essence';
+const ESSENCE_KEY  = 'icfes_essence';
+const META_UPG_KEY = 'icfes_meta_upg';
+
+interface MetaUpgrade { id:string; name:string; icon:string; desc:string; cost:number; maxLevel:number; }
+const META_UPGRADES: MetaUpgrade[] = [
+  { id:'hp_up',      name:'Corazón Forjado',  icon:'❤️',  desc:'+1 HP inicial por nivel',    cost:30, maxLevel:3 },
+  { id:'grenade_up', name:'Arsenal',           icon:'💣',  desc:'+1 Granada inicial/nivel',   cost:40, maxLevel:2 },
+  { id:'soul_start', name:'Alma Despierta',    icon:'⚡',  desc:'Empiezas con 30 de Alma',    cost:25, maxLevel:1 },
+  { id:'relic_plus', name:'Cofre del Destino', icon:'📦',  desc:'+1 reliquia extra siempre',  cost:50, maxLevel:1 },
+  { id:'combo_start',name:'Racha Perpetua',    icon:'🔥',  desc:'Combo inicia en ×3',         cost:35, maxLevel:1 },
+  { id:'ess_boost',  name:'Colector',          icon:'✨',  desc:'+50% esencia por run',        cost:60, maxLevel:1 },
+];
 
 // ── Clases de personaje ───────────────────────────────────────────────────────
 interface ClassConfig { id:PlayerClass; name:string; icon:string; color:string; passive:string; desc:string; }
@@ -143,6 +154,9 @@ export class GameScene extends Phaser.Scene {
   private enemySlowLeft      = 0;     // ms restantes del slow del Lector
   private runEssence         = 0;     // esencia ganada esta corrida
   private totalEssence       = 0;     // esencia persistente (localStorage)
+  private metaUpgLevels:     Record<string,number> = {};
+  private essMultiplier      = 1.0;   // ×1.5 con ess_boost
+  private poisonTimer:       Phaser.Time.TimerEvent | null = null;
   private classBadge!:       Phaser.GameObjects.Text;
   private essenceHud!:       Phaser.GameObjects.Text;
   private qPanelBg!:         Phaser.GameObjects.Rectangle;
@@ -272,6 +286,8 @@ export class GameScene extends Phaser.Scene {
     this.nextWaveModifier = 'normal'; this.isEliteQuestion = false;
     this.questionDuration = QUESTION_TIME;
     try { this.totalEssence = parseInt(localStorage.getItem(ESSENCE_KEY)||'0',10); } catch { this.totalEssence=0; }
+    try { this.metaUpgLevels = JSON.parse(localStorage.getItem(META_UPG_KEY)||'{}') as Record<string,number>; } catch { this.metaUpgLevels={}; }
+    this.applyMetaUpgrades();
     this.pX = PLAYER_X; this.pY = GROUND_Y;
     this.pVelX = 0; this.pVelY = 0;
     this.pOnGround = true; this.pFacingRight = true;
@@ -292,8 +308,10 @@ export class GameScene extends Phaser.Scene {
 
     this.scene.launch('CRT');
     this.cameras.main.fadeIn(500, 0, 0, 0);
-    this.time.delayedCall(600, () => this.showClassSelector(() => {
-      this.time.delayedCall(300, () => this.startWave());
+    this.time.delayedCall(600, () => this.showMetaShop(() => {
+      this.time.delayedCall(200, () => this.showClassSelector(() => {
+        this.time.delayedCall(300, () => this.startWave());
+      }));
     }));
   }
 
@@ -994,13 +1012,51 @@ export class GameScene extends Phaser.Scene {
     this.qPanel.setVisible(true).setAlpha(0).setY(GH+Q_PH/2);
     this.tweens.add({ targets:this.qPanel, alpha:1, y:Q_PY, duration:320, ease:'Back.easeOut' });
     this.timerEvent = this.time.delayedCall(this.questionDuration, ()=>this.onTimeout());
+
+    // Pregunta Envenenada: activa si enemy élite, boss, o wave >= 5
+    const poisoned = this.isEliteQuestion || this.enemy?.type === 'boss' || this.wave >= 4;
+    if (poisoned) this.startPoisonTimer();
   }
 
   private hideQuestion(): void {
-    this.timerEvent?.remove(); this.timerEvent = null;
+    this.timerEvent?.remove();   this.timerEvent  = null;
+    this.poisonTimer?.remove();  this.poisonTimer  = null;
     this.tweens.add({
       targets:this.qPanel, alpha:0, y:GH+Q_PH/2, duration:240, ease:'Power2.easeIn',
       onComplete:()=>this.qPanel.setVisible(false),
+    });
+  }
+
+  /** Pregunta Envenenada: el enemigo golpea al jugador cada 4s mientras no responde */
+  private startPoisonTimer(): void {
+    this.poisonTimer?.remove();
+    const interval = 4000;
+    this.poisonTimer = this.time.addEvent({
+      delay: interval,
+      loop: true,
+      callback: () => {
+        if (this.state !== 'questioning') { this.poisonTimer?.remove(); return; }
+        // Flash ámbar en el panel
+        this.tweens.add({ targets:this.qPanelBg, alpha:{from:1,to:0.2}, duration:80, yoyo:true, repeat:2 });
+        this.showFloatingText(this.enemy?.sprite.x ?? GW/2,
+          (this.enemy?.sprite.y ?? 200)-60, '☠️ ¡GOLPE VENENO!', 0xff8800);
+        this.playBeep('wrong');
+        this.cameras.main.shake(120, 0.01);
+        const flash = this.add.rectangle(GW/2,GH/2,GW,GH,0xff6600,0.22).setDepth(50);
+        this.tweens.add({ targets:flash, alpha:0, duration:200, onComplete:()=>flash.destroy() });
+        // Daño real — respeta shield (i-frames no aplican aquí, es veneno)
+        if (this.hp > 0) {
+          if (this.hasShield) {
+            this.hasShield=false; this.shieldSprite.setAlpha(0);
+            this.tweens.killTweensOf(this.shieldSprite);
+            (this.children.getByName('shieldHud') as Phaser.GameObjects.Text|null)?.setText('');
+          } else {
+            this.hp = Math.max(0, this.hp - 1);
+            this.updateHearts();
+            if (this.hp <= 0) { this.hideQuestion(); this.doGameOver(); }
+          }
+        }
+      },
     });
   }
 
@@ -1573,6 +1629,8 @@ export class GameScene extends Phaser.Scene {
   private hasRelic(id:string): boolean { return this.activeRelics.includes(id); }
 
   private showRelicPicker(onDone:()=>void, count=3): void {
+    // relic_plus meta upgrade: +1 reliquia siempre
+    if ((this.metaUpgLevels['relic_plus']??0) >= 1) count = Math.min(count + 1, 6);
     this.state = 'relic_pick';
 
     const available = RELICS.filter(r=>!this.activeRelics.includes(r.id));
@@ -1788,7 +1846,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private addRunEssence(amount: number): void {
-    this.runEssence += amount;
+    this.runEssence += Math.floor(amount * this.essMultiplier);
     this.essenceHud.setText(`✨ ${this.totalEssence + this.runEssence}`);
   }
 
@@ -1797,6 +1855,117 @@ export class GameScene extends Phaser.Scene {
       const saved = parseInt(localStorage.getItem(ESSENCE_KEY)||'0',10);
       localStorage.setItem(ESSENCE_KEY, String(saved + this.runEssence));
     } catch { /* noop */ }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🛒  META-PROGRESIÓN
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private applyMetaUpgrades(): void {
+    const lvl = (id:string) => this.metaUpgLevels[id] ?? 0;
+    this.hp      = Math.min(PLAYER_MAX_HP + lvl('hp_up'), PLAYER_MAX_HP + 3);
+    this.maxHp   = this.hp;
+    this.grenades= PLAYER_GRENADES + lvl('grenade_up');
+    if (lvl('soul_start') >= 1)  this.soul  = 30;
+    if (lvl('combo_start') >= 1) this.combo = 3;
+    this.essMultiplier = lvl('ess_boost') >= 1 ? 1.5 : 1.0;
+  }
+
+  private showMetaShop(onDone: ()=>void): void {
+    // Si no hay esencia ni upgrades comprados, saltar directo
+    if (this.totalEssence === 0 && Object.keys(this.metaUpgLevels).length === 0) {
+      onDone(); return;
+    }
+
+    this.state = 'class_select'; // reutilizamos para congelar movimiento
+    const overlay = this.add.rectangle(GW/2,GH/2,GW,GH,0x000000,0.94).setDepth(40);
+    const cont    = this.add.container(0,0).setDepth(41);
+
+    const title = this.add.text(GW/2, 38, '🏪  TIENDA PERMANENTE', {
+      fontFamily:'monospace', fontSize:'22px', color:'#ffdd55', fontStyle:'bold',
+    }).setOrigin(0.5);
+    const essTxt = this.add.text(GW/2, 64, `✨ Esencia disponible: ${this.totalEssence}`, {
+      fontFamily:'monospace', fontSize:'13px', color:'#aaddff',
+    }).setOrigin(0.5).setName('essTxt');
+    const hint = this.add.text(GW/2, 82, 'Las mejoras son PERMANENTES entre runs.', {
+      fontFamily:'monospace', fontSize:'10px', color:'#556677',
+    }).setOrigin(0.5);
+    cont.add([title, essTxt, hint]);
+
+    const CW=140, CH=160, cols=6, spacing=148;
+    const startX = GW/2 - spacing*(cols-1)/2;
+
+    const refreshCards = () => {
+      essTxt.setText(`✨ Esencia disponible: ${this.totalEssence}`);
+    };
+
+    META_UPGRADES.forEach((upg, i) => {
+      const cx = startX + i*spacing, cy = GH/2 + 20;
+      const curLvl  = this.metaUpgLevels[upg.id] ?? 0;
+      const maxed   = curLvl >= upg.maxLevel;
+      const canBuy  = !maxed && this.totalEssence >= upg.cost;
+      const borderC = maxed ? 0xffdd55 : canBuy ? 0x44ff88 : 0x334466;
+
+      const card = this.add.rectangle(cx, cy, CW, CH, 0x020c1a, 0.96)
+        .setInteractive({useHandCursor: canBuy});
+      card.setStrokeStyle(2, borderC, maxed ? 1.0 : 0.7);
+      card.setName(`card_${upg.id}`);
+
+      const iconT  = this.add.text(cx, cy-58, upg.icon,  {fontFamily:'monospace',fontSize:'28px'}).setOrigin(0.5);
+      const nameT  = this.add.text(cx, cy-24, upg.name,  {fontFamily:'monospace',fontSize:'11px',color:maxed?'#ffdd55':'#eeddaa',fontStyle:'bold',wordWrap:{width:CW-12},align:'center'}).setOrigin(0.5);
+      const descT  = this.add.text(cx, cy+8,  upg.desc,  {fontFamily:'monospace',fontSize:'9px', color:'#88aacc',wordWrap:{width:CW-12},align:'center'}).setOrigin(0.5);
+      const lvlT   = this.add.text(cx, cy+42, maxed ? '✅ MAX' : `Nv ${curLvl}/${upg.maxLevel}`, {fontFamily:'monospace',fontSize:'10px',color:maxed?'#ffdd55':'#556677'}).setOrigin(0.5);
+      const costT  = this.add.text(cx, cy+60, maxed ? '' : `✨ ${upg.cost}`, {fontFamily:'monospace',fontSize:'11px',color:canBuy?'#aaddff':'#334466',fontStyle:'bold'}).setOrigin(0.5);
+
+      if (canBuy) {
+        card.on('pointerover', ()=>{ card.setFillStyle(0x0a2040,0.98); card.setStrokeStyle(3,0x44ff88,1); });
+        card.on('pointerout',  ()=>{ card.setFillStyle(0x020c1a,0.96); card.setStrokeStyle(2,borderC,0.7); });
+        card.on('pointerdown', ()=>{
+          const newLvl = (this.metaUpgLevels[upg.id]??0) + 1;
+          this.metaUpgLevels[upg.id] = newLvl;
+          this.totalEssence -= upg.cost;
+          try {
+            localStorage.setItem(ESSENCE_KEY,   String(this.totalEssence));
+            localStorage.setItem(META_UPG_KEY,  JSON.stringify(this.metaUpgLevels));
+          } catch { /* noop */ }
+          this.playBeep('relic');
+          this.tweens.add({targets:card,scaleX:1.1,scaleY:1.1,duration:120,yoyo:true});
+          // Actualizar textos del card
+          const isFull = newLvl >= upg.maxLevel;
+          nameT.setColor(isFull ? '#ffdd55' : '#eeddaa');
+          lvlT.setText(isFull ? '✅ MAX' : `Nv ${newLvl}/${upg.maxLevel}`).setColor(isFull?'#ffdd55':'#556677');
+          costT.setText(isFull ? '' : `✨ ${upg.cost}`);
+          card.setStrokeStyle(2, isFull ? 0xffdd55 : 0x334466, isFull ? 1 : 0.7);
+          if (isFull || this.totalEssence < upg.cost) {
+            card.removeInteractive();
+            card.removeAllListeners();
+          }
+          refreshCards();
+          this.applyMetaUpgrades();
+          this.updateHearts();
+        });
+      }
+
+      cont.add([card, iconT, nameT, descT, lvlT, costT]);
+    });
+
+    // Botón JUGAR
+    const playBtn = this.add.rectangle(GW/2, GH-48, 220, 40, 0x003300, 0.97)
+      .setInteractive({useHandCursor:true}).setStrokeStyle(2,0x00ff44,0.9);
+    const playTxt = this.add.text(GW/2, GH-48, '▶  JUGAR', {
+      fontFamily:'monospace', fontSize:'16px', color:'#00ff44', fontStyle:'bold',
+    }).setOrigin(0.5);
+    playBtn.on('pointerover',  ()=>playBtn.setFillStyle(0x005500,0.97));
+    playBtn.on('pointerout',   ()=>playBtn.setFillStyle(0x003300,0.97));
+    playBtn.on('pointerdown',  ()=>{
+      this.playBeep('correct');
+      this.tweens.add({targets:[overlay,cont,playBtn,playTxt],alpha:0,duration:300,ease:'Power2',
+        onComplete:()=>{ overlay.destroy(); cont.destroy(); playBtn.destroy(); playTxt.destroy(); onDone(); }});
+    });
+    cont.add([playBtn, playTxt]);
+
+    cont.setAlpha(0).setY(20);
+    this.tweens.add({targets:cont, alpha:1, y:0, duration:400, ease:'Back.easeOut'});
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
