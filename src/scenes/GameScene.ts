@@ -247,6 +247,8 @@ export class GameScene extends Phaser.Scene {
   private correctAns   = 0;
   private totalAns     = 0;
   private killCount    = 0;
+  private killStreak   = 0;   // muertes seguidas rápidas (Streets of Rage feel)
+  private killStreakTimer = 0; // ms hasta que se resetea la racha
   private activeRelics: string[] = [];
   private comboShieldUsed = false;
   private bossPhase    = 0;
@@ -375,7 +377,7 @@ export class GameScene extends Phaser.Scene {
     this.score    = 0; this.combo     = 0;
     this.hasShield= false; this.soul  = 0;
     this.correctAns = 0;  this.totalAns = 0;
-    this.killCount  = 0;  this.bossPhase= 0;
+    this.killCount  = 0;  this.bossPhase= 0; this.killStreak = 0; this.killStreakTimer = 0;
     this.activeRelics = []; this.comboShieldUsed = false;
     this.runEssence = 0; this.enemySlowLeft = 0;
     this.nextWaveModifier = 'normal'; this.isEliteQuestion = false;
@@ -438,6 +440,11 @@ export class GameScene extends Phaser.Scene {
     this.updateEnemy(dt);
     this.updateProjectiles(dt);
     this.updatePlatformPickups();
+    // Kill streak timer
+    if (this.killStreakTimer > 0) {
+      this.killStreakTimer -= delta;
+      if (this.killStreakTimer <= 0) { this.killStreak = 0; this.killStreakTimer = 0; }
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1441,7 +1448,14 @@ export class GameScene extends Phaser.Scene {
       spriteH, warned:false, behavior, isDuplicate:false, behaviorGlow,
       status:'none', statusLeft:0, burnTicks:0, statusIcon:null };
     this.bossPhase = 0;
-    this.state = 'idle';
+
+    // ── Boss intro cinematográfico ─────────────────────────────────────────
+    if (type === 'boss') {
+      this.state = 'wave_clear'; // congelar player temporalmente
+      this.showBossIntro(() => { this.state = 'idle'; });
+    } else {
+      this.state = 'idle';
+    }
 
     // Label de behavior al aparecer
     if (behavior !== 'normal') {
@@ -1455,6 +1469,69 @@ export class GameScene extends Phaser.Scene {
       };
       this.showFloatingText(SPAWN_X, GROUND_Y - spriteH - 30, bLabels[behavior], bColors[behavior]);
     }
+  }
+
+  // ── Boss intro cinematográfico ─────────────────────────────────────────────
+  private showBossIntro(onDone: () => void): void {
+    this.cameras.main.shake(400, 0.022);
+
+    // Overlay rojo dramático
+    const overlay = this.add.rectangle(GW/2, GH/2, GW, GH, 0x880000, 0).setDepth(45);
+    this.tweens.add({ targets:overlay, alpha:{from:0,to:0.55}, duration:300,
+      onComplete:()=>{
+        this.tweens.add({ targets:overlay, alpha:0, duration:600, delay:800,
+          onComplete:()=>overlay.destroy() });
+      }
+    });
+
+    // Texto dramático de boss
+    const lines = [
+      { txt:'⚠️  BOSS WAVE  ⚠️', color:'#ff2200', size:'30px', y: GH/2-40 },
+      { txt:this.getBossName(),    color:'#ffaa44', size:'20px', y: GH/2-4  },
+      { txt:'¡Prepárate!',         color:'#ffee44', size:'14px', y: GH/2+28 },
+    ];
+
+    lines.forEach((l, idx) => {
+      const t = this.add.text(GW/2, l.y, l.txt, {
+        fontFamily:'monospace', fontSize:l.size, color:l.color, fontStyle:'bold',
+        stroke:'#330000', strokeThickness:4,
+      }).setOrigin(0.5).setDepth(46).setAlpha(0).setScale(0.5);
+
+      this.tweens.add({
+        targets:t, alpha:1, scaleX:1, scaleY:1,
+        duration:280, delay: idx * 150, ease:'Back.easeOut',
+        onComplete:()=>{
+          this.tweens.add({
+            targets:t, alpha:0, y:t.y - 18, duration:380, delay:900,
+            onComplete:()=>t.destroy(),
+          });
+        },
+      });
+    });
+
+    // Scan line rojo horizontal
+    for (let i = 0; i < 3; i++) {
+      this.time.delayedCall(i * 80, () => {
+        const line = this.add.rectangle(GW/2, Phaser.Math.Between(80,GH-80), GW, 3, 0xff2200, 0.6)
+          .setDepth(46);
+        this.tweens.add({ targets:line, alpha:0, duration:350, onComplete:()=>line.destroy() });
+      });
+    }
+
+    // SFX de alerta
+    this.playBeep('special');
+    this.time.delayedCall(180, () => this.playBeep('special'));
+
+    // Dar control al jugador después del intro
+    this.time.delayedCall(1600, onDone);
+  }
+
+  private getBossName(): string {
+    const names = [
+      'DEMONIO CAÍDO', 'SEÑOR DEL ABISMO', 'BESTIA OSCURA',
+      'REY NO MUERTO', 'ÁNGEL CORROMPIDO',
+    ];
+    return names[this.wave % names.length];
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1984,6 +2061,28 @@ export class GameScene extends Phaser.Scene {
     if (this.hasRelic('hp_regen') && this.killCount%5===0 && this.hp < this.maxHp) {
       this.hp++; this.updateHearts();
       this.showFloatingText(this.pX,this.pY-80,'💧 +1 HP',0x44ddff);
+    }
+
+    // ── Kill streak (Streets of Rage) ─────────────────────────────────────
+    this.killStreak++;
+    this.killStreakTimer = 4500;  // resetea si no mata en 4.5s
+    if (this.killStreak >= 3) {
+      const streakMsgs = ['','','','🔥 TRIPLE KILL!','💥 QUADRA!','⭐ KILLING SPREE!','🌟 RAMPAGE!'];
+      const msg = this.killStreak < streakMsgs.length
+        ? streakMsgs[this.killStreak] : `☠️ ${this.killStreak}× STREAK!`;
+      const col = this.killStreak >= 6 ? 0xff00ff : this.killStreak >= 5 ? 0xff8800 : 0xffee44;
+      // Texto grande centrado
+      const t = this.add.text(GW/2, GH/2 - 60, msg, {
+        fontFamily:'monospace', fontSize:'22px', color:'#'+col.toString(16).padStart(6,'0'),
+        fontStyle:'bold', stroke:'#000033', strokeThickness:4,
+      }).setOrigin(0.5).setDepth(25).setScale(0.6);
+      this.tweens.add({
+        targets:t, scaleX:1, scaleY:1, alpha:{from:1,to:0},
+        y: t.y - 50, duration:1200, ease:'Back.easeOut',
+        onComplete:()=>t.destroy(),
+      });
+      // Bonus score por streak
+      this.addScore(this.killStreak * 30);
     }
 
     // Word echo — muestra la palabra en inglés al matar
