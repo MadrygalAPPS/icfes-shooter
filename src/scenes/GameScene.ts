@@ -106,19 +106,21 @@ const BIOMES: BiomeConfig[] = [
 ];
 
 // ── Reliquias ─────────────────────────────────────────────────────────────────
-interface RelicConfig { id:string; name:string; icon:string; desc:string; }
+// notchCost: peso de ranura (Hollow Knight charms system)
+interface RelicConfig { id:string; name:string; icon:string; desc:string; notchCost:number; }
 const RELICS: RelicConfig[] = [
-  { id:'grammar_dmg',  name:'Pluma Arcana',      icon:'✒️',  desc:'+1 DMG en Grammar' },
-  { id:'vocab_soul',   name:'Lengua de Fuego',   icon:'🔥',  desc:'Vocab rápido: +20 Alma' },
-  { id:'stone_heart',  name:'Corazón de Piedra', icon:'🪨',  desc:'+1 HP máximo' },
-  { id:'soul_boost',   name:'Cáliz del Alma',    icon:'🏺',  desc:'Especial al 70% de Alma' },
-  { id:'combo_shield', name:'Escudo de Racha',   icon:'⚔️',  desc:'Fallo no rompe combo (1×)' },
-  { id:'twin_shot',    name:'Bala Gemela',        icon:'⚡',  desc:'Golpe [Z] siempre doble' },
-  { id:'iron_dodge',   name:'Manto de Sombra',   icon:'👁️', desc:'Dodge +200 ms invencible' },
-  { id:'boss_breaker', name:'Filo de Caos',       icon:'💀',  desc:'+2 DMG vs Bosses' },
-  { id:'hp_regen',     name:'Lágrima Divina',     icon:'💧',  desc:'Cada 5 kills: +1 HP' },
-  { id:'soul_leech',   name:'Maldición Vieja',   icon:'🌑',  desc:'Errores drenan 15 Alma' },
+  { id:'grammar_dmg',  name:'Pluma Arcana',      icon:'✒️',  desc:'+1 DMG en Grammar',         notchCost:2 },
+  { id:'vocab_soul',   name:'Lengua de Fuego',   icon:'🔥',  desc:'Vocab rápido: +20 Alma',    notchCost:2 },
+  { id:'stone_heart',  name:'Corazón de Piedra', icon:'🪨',  desc:'+1 HP máximo',               notchCost:3 },
+  { id:'soul_boost',   name:'Cáliz del Alma',    icon:'🏺',  desc:'Especial al 70% de Alma',   notchCost:3 },
+  { id:'combo_shield', name:'Escudo de Racha',   icon:'⚔️',  desc:'Fallo no rompe combo (1×)', notchCost:1 },
+  { id:'twin_shot',    name:'Bala Gemela',        icon:'⚡',  desc:'Golpe [Z] siempre doble',   notchCost:2 },
+  { id:'iron_dodge',   name:'Manto de Sombra',   icon:'👁️', desc:'Dodge +200 ms invencible',  notchCost:1 },
+  { id:'boss_breaker', name:'Filo de Caos',       icon:'💀',  desc:'+2 DMG vs Bosses',           notchCost:2 },
+  { id:'hp_regen',     name:'Lágrima Divina',     icon:'💧',  desc:'Cada 5 kills: +1 HP',        notchCost:2 },
+  { id:'soul_leech',   name:'Maldición Vieja',   icon:'🌑',  desc:'Errores drenan 15 Alma',    notchCost:1 },
 ];
+const BASE_NOTCHES = 6;  // ranuras totales base
 
 // ── Meta-progresión ───────────────────────────────────────────────────────────
 const ESSENCE_KEY   = 'icfes_essence';
