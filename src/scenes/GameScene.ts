@@ -28,6 +28,15 @@ const GAME_PLATFORMS: PlatformDef[] = [
   { x:555, y:GROUND_Y-120, w:210 },
 ];
 
+// ── Obstáculos ambientales ────────────────────────────────────────────────────
+type ObstacleType = 'spikes' | 'acid';
+interface ObstacleDef { x:number; w:number; type:ObstacleType; }
+const GAME_OBSTACLES: ObstacleDef[] = [
+  { x:310, w:52,  type:'spikes' },   // centro-izquierda
+  { x:510, w:44,  type:'spikes' },   // centro-derecha
+  { x:420, w:70,  type:'acid'   },   // charco centro
+];
+
 // ── Física ────────────────────────────────────────────────────────────────────
 const P_GRAVITY      = 900;
 const P_MOVE_SPEED   = 230;
@@ -112,9 +121,10 @@ const RELICS: RelicConfig[] = [
 ];
 
 // ── Meta-progresión ───────────────────────────────────────────────────────────
-const ESSENCE_KEY  = 'icfes_essence';
-const META_UPG_KEY = 'icfes_meta_upg';
-const GUILT_KEY    = 'icfes_guilt';
+const ESSENCE_KEY   = 'icfes_essence';
+const META_UPG_KEY  = 'icfes_meta_upg';
+const GUILT_KEY     = 'icfes_guilt';
+const CHECKPOINT_KEY = 'icfes_best_wave';  // Hollow Knight bench — best wave reached
 
 // ── Armas in-run (Dead Cells) ─────────────────────────────────────────────────
 type WeaponId = 'sword'|'bow'|'hammer'|'dagger';
@@ -278,8 +288,10 @@ export class GameScene extends Phaser.Scene {
   };
   private starMoveCdLeft  = 0;   // ms cooldown Star Move
   private starMoveHud!:   Phaser.GameObjects.Text;
-  private currentWeapon:  WeaponId | null = null;
-  private weaponHud!:     Phaser.GameObjects.Text;
+  private currentWeapon:    WeaponId | null = null;
+  private weaponHud!:       Phaser.GameObjects.Text;
+  private obstacleHurtLeft  = 0;   // ms de invulnerabilidad por obstáculo
+  private acidDmgAccum      = 0;   // ms acumulados en ácido
 
   // ── Panel pregunta ───────────────────────────────────────────────────────
   private qPanel!:     Phaser.GameObjects.Container;
@@ -335,6 +347,7 @@ export class GameScene extends Phaser.Scene {
     this.questionDuration = QUESTION_TIME;
     this.scrollAtk = 0; this.scrollSoulMax = 0; this.scrollSpeedMult = 1.0;
     this.penitencia = 'none'; this.starMoveCdLeft = 0; this.currentWeapon = null;
+    this.obstacleHurtLeft = 0; this.acidDmgAccum = 0;
     try { this.guilt = Math.min(3, parseInt(localStorage.getItem(GUILT_KEY)||'0',10)); } catch { this.guilt=0; }
     try { this.totalEssence = parseInt(localStorage.getItem(ESSENCE_KEY)||'0',10); } catch { this.totalEssence=0; }
     try { this.metaUpgLevels = JSON.parse(localStorage.getItem(META_UPG_KEY)||'{}') as Record<string,number>; } catch { this.metaUpgLevels={}; }
@@ -457,6 +470,35 @@ export class GameScene extends Phaser.Scene {
       this.tweens.add({ targets:glow, alpha:{from:0.65,to:0.12}, duration:1400, yoyo:true, repeat:-1 });
       this.add.rectangle(p.x - p.w/2 + 8,  p.y+14, 14, 28, 0x331188, 0.8).setDepth(2.8);
       this.add.rectangle(p.x + p.w/2 - 8,  p.y+14, 14, 28, 0x331188, 0.8).setDepth(2.8);
+    });
+
+    // ── Obstáculos ambientales ─────────────────────────────────────────────
+    GAME_OBSTACLES.forEach(obs => {
+      if (obs.type === 'spikes') {
+        const bg = this.add.rectangle(obs.x, GROUND_Y-6, obs.w, 18, 0x111122, 0.9).setDepth(3);
+        bg.setStrokeStyle(1, 0x553333, 0.5);
+        const spikeCnt = Math.floor(obs.w / 10);
+        for (let i = 0; i < spikeCnt; i++) {
+          const sx = obs.x - obs.w/2 + 5 + i*10;
+          const spike = this.add.triangle(sx, GROUND_Y-7, 0,12, 5,-4, 10,12, 0xcc3333, 0.9).setDepth(3.5);
+          this.tweens.add({ targets:spike, alpha:{from:0.9,to:0.4}, duration:1000+i*80, yoyo:true, repeat:-1 });
+        }
+      } else {
+        // Charco de ácido
+        const pool = this.add.ellipse(obs.x, GROUND_Y-4, obs.w, 14, 0x22dd44, 0.78).setDepth(3);
+        this.tweens.add({ targets:pool, scaleX:{from:1,to:1.06}, scaleY:{from:1,to:0.85},
+          alpha:{from:0.78,to:0.45}, duration:900, yoyo:true, repeat:-1 });
+        // Burbujas de ácido
+        for (let b = 0; b < 4; b++) {
+          const bx = obs.x + Phaser.Math.Between(-obs.w/2+8, obs.w/2-8);
+          const bubble = this.add.ellipse(bx, GROUND_Y-8, 5, 5, 0x55ff66, 0.65).setDepth(3.8);
+          this.tweens.add({
+            targets:bubble, y:GROUND_Y-22, alpha:0, duration:Phaser.Math.Between(800,1600),
+            delay:b*300, repeat:-1,
+            onRepeat:()=>{ bubble.setPosition(bx, GROUND_Y-8); bubble.setAlpha(0.65); },
+          });
+        }
+      }
     });
 
     this.ambientEmitter = this.add.particles(0,0,'spark',{
@@ -833,6 +875,40 @@ export class GameScene extends Phaser.Scene {
     }
     if (this.pY >= GROUND_Y) { this.pY = GROUND_Y; this.pVelY = 0; this.pOnGround = true; }
     this.pX = Phaser.Math.Clamp(this.pX, 24, GW - 24);
+
+    // ── Colisión obstáculos (solo en suelo, fuera de i-frames) ───────────
+    if (this.pOnGround && this.pY >= GROUND_Y - 6 && this.pIframeLeft <= 0
+        && this.obstacleHurtLeft <= 0 && this.state !== 'game_over') {
+      for (const obs of GAME_OBSTACLES) {
+        const inX = this.pX > obs.x - obs.w/2 - 8 && this.pX < obs.x + obs.w/2 + 8;
+        if (!inX) continue;
+        if (obs.type === 'spikes') {
+          // Daño inmediato + lanzamiento
+          this.obstacleHurtLeft = 1800;
+          this.playerHit();
+          this.pVelY = -280; this.pOnGround = false;
+          this.showFloatingText(this.pX, this.pY-60, '🔴 ESPINAS -1', 0xff3333);
+          break;
+        } else {
+          // Ácido: daño gradual (1 HP / 3s)
+          this.acidDmgAccum += dt * 1000;
+          if (this.acidDmgAccum >= 3000) {
+            this.acidDmgAccum = 0;
+            this.obstacleHurtLeft = 500;
+            this.playerHit();
+            this.showFloatingText(this.pX, this.pY-60, '☠️ ÁCIDO -1', 0x44ff66);
+          }
+          break;
+        }
+      }
+    } else {
+      // Fuera de obstáculos: resetear acumulador ácido
+      const onAcid = GAME_OBSTACLES.some(o =>
+        o.type === 'acid' && this.pX > o.x-o.w/2-8 && this.pX < o.x+o.w/2+8
+        && this.pOnGround && this.pY >= GROUND_Y-6);
+      if (!onAcid) this.acidDmgAccum = 0;
+    }
+    if (this.obstacleHurtLeft > 0) this.obstacleHurtLeft -= dt * 1000;
 
     if (this.enemy && Math.abs(this.pVelX) < 20 && !this.pIsAttacking)
       this.pFacingRight = this.enemy.sprite.x > this.pX;
@@ -2031,14 +2107,106 @@ export class GameScene extends Phaser.Scene {
           } else {
             const relicCount = path === 'dangerous' ? 5 : 3;
             this.showRelicPicker(()=>{
-              this.wave++;
-              this.transitionBiome();
-              this.time.delayedCall(700,()=>this.startWave());
+              // Checkpoint cada 3 oleadas completadas (Hollow Knight bench)
+              const nextWave = this.wave + 1;
+              if (nextWave % 3 === 0) {
+                this.showCheckpoint(() => {
+                  this.wave++;
+                  this.transitionBiome();
+                  this.time.delayedCall(700, () => this.startWave());
+                });
+              } else {
+                this.wave++;
+                this.transitionBiome();
+                this.time.delayedCall(700, () => this.startWave());
+              }
             }, relicCount);
           }
         });
       }
     }, isLastBoss ? 2500 : 1500);
+  }
+
+  // ── Checkpoint (Hollow Knight bench) — cada 3 oleadas ──────────────────────
+  private showCheckpoint(onDone: () => void): void {
+    // Guardar mejor oleada
+    const reachedWave = this.wave + 1;
+    try {
+      const best = parseInt(localStorage.getItem(CHECKPOINT_KEY)||'0',10);
+      if (reachedWave > best) localStorage.setItem(CHECKPOINT_KEY, String(reachedWave));
+    } catch { /* noop */ }
+
+    // Curar al jugador
+    if (this.hp < this.maxHp) {
+      this.hp = Math.min(this.hp + 1, this.maxHp);
+      this.updateHearts();
+    }
+    this.soul = Math.min(SOUL_MAX + this.scrollSoulMax, this.soul + 30);
+    this.updateSoulBar();
+
+    // Overlay de checkpoint
+    const overlay = this.add.rectangle(GW/2, GH/2, GW, GH, 0x000000, 0.82).setDepth(50);
+    const cont = this.add.container(0,0).setDepth(51);
+
+    const panel = this.add.rectangle(GW/2, GH/2, 400, 220, 0x04041a, 0.97);
+    panel.setStrokeStyle(2, 0x4488ff);
+    cont.add(panel);
+
+    // Fogón (unicode + animación)
+    const fire = this.add.text(GW/2, GH/2-75, '🔥', {fontSize:'36px'}).setOrigin(0.5);
+    cont.add(fire);
+    this.tweens.add({ targets:fire, scaleX:1.15, scaleY:1.15, duration:400, yoyo:true, repeat:-1 });
+
+    const title = this.add.text(GW/2, GH/2-35, '✦ PUNTO DE CONTROL ✦', {
+      fontFamily:'monospace', fontSize:'18px', color:'#4488ff', fontStyle:'bold',
+    }).setOrigin(0.5);
+    cont.add(title);
+
+    const sub = this.add.text(GW/2, GH/2-8, `Oleada ${reachedWave} alcanzada — progreso guardado`, {
+      fontFamily:'monospace', fontSize:'11px', color:'#8899cc',
+    }).setOrigin(0.5);
+    cont.add(sub);
+
+    const stats = this.add.text(GW/2, GH/2+20,
+      `❤️ ${this.hp}/${this.maxHp}  ·  🔷 ${this.soul} Alma  ·  ✨ ${this.totalEssence+this.runEssence} Esencia`, {
+      fontFamily:'monospace', fontSize:'12px', color:'#aaddff',
+    }).setOrigin(0.5);
+    cont.add(stats);
+
+    // Heal feedback
+    const healTxt = this.add.text(GW/2, GH/2+42, '💧 +1 HP  +30 Alma restaurados', {
+      fontFamily:'monospace', fontSize:'11px', color:'#44ffaa',
+    }).setOrigin(0.5);
+    cont.add(healTxt);
+
+    const hint = this.add.text(GW/2, GH/2+72, 'ESPACIO · ENTER  para continuar', {
+      fontFamily:'monospace', fontSize:'10px', color:'#555577',
+    }).setOrigin(0.5);
+    cont.add(hint);
+
+    // Pulso del hint
+    this.tweens.add({ targets:hint, alpha:{from:1,to:0.3}, duration:700, yoyo:true, repeat:-1 });
+
+    cont.setAlpha(0);
+    this.tweens.add({ targets:cont, alpha:1, duration:400, ease:'Quad.easeOut' });
+
+    const close = () => {
+      this.tweens.add({
+        targets:[overlay,cont], alpha:0, duration:350,
+        onComplete:()=>{ overlay.destroy(); cont.destroy(); onDone(); },
+      });
+    };
+
+    const spaceKey = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    const enterKey = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
+    spaceKey?.once('down', close);
+    enterKey?.once('down', close);
+    // Auto-continúa después de 5s
+    this.time.delayedCall(5000, () => {
+      spaceKey?.off('down', close);
+      enterKey?.off('down', close);
+      if (overlay.active) close();
+    });
   }
 
   private showBanner(text:string,onDone:()=>void,duration=1200): void {
