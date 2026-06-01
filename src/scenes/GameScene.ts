@@ -7,18 +7,26 @@ import {
 import { Question, getRandomQuestion, resetQuestionPool } from '../data/questions';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ⚔️  GAME SCENE — Beat-em-up quiz ICFES  v4.0
-//     + Clases · Meta-progresión · Enemy behaviors · Path selector
-//     + Elite questions · Panic mode · Hit-freeze · SFX · Reliquias · Boss fases
+// ⚔️  GAME SCENE — Beat-em-up quiz ICFES  v5.0
+//     + Status effects · Guilt · Scrolls · Penitencia · Star Move · Platforms
+//     + Clases · Meta-progresión · Enemy behaviors · Path selector · Elite questions
 // ═══════════════════════════════════════════════════════════════════════════════
 
 type AttackType    = 'light' | 'heavy' | 'special';
 type PlayerClass   = 'grammatico' | 'vocabulista' | 'lector' | 'bilingue';
 type EnemyBehavior = 'normal' | 'shielded' | 'turbo' | 'duplicator' | 'silent' | 'elite';
+type EnemyStatus   = 'none' | 'stunned' | 'burning' | 'slowed';
 type PathChoice    = 'dangerous' | 'normal' | 'safe';
 type GameState     = 'idle' | 'questioning' | 'feedback' | 'shooting'
                    | 'wave_clear' | 'game_over' | 'relic_pick'
                    | 'class_select' | 'path_select';
+
+// ── Plataformas ───────────────────────────────────────────────────────────────
+interface PlatformDef { x:number; y:number; w:number; }
+const GAME_PLATFORMS: PlatformDef[] = [
+  { x:165, y:GROUND_Y-120, w:210 },
+  { x:555, y:GROUND_Y-120, w:210 },
+];
 
 // ── Física ────────────────────────────────────────────────────────────────────
 const P_GRAVITY      = 900;
@@ -62,6 +70,10 @@ interface ActiveEnemy {
   behavior:     EnemyBehavior;
   isDuplicate:  boolean;
   behaviorGlow: Phaser.GameObjects.Ellipse | null;
+  status:       EnemyStatus;
+  statusLeft:   number;          // ms restantes del status
+  burnTicks:    number;          // ticks de fuego restantes
+  statusIcon:   Phaser.GameObjects.Text | null;
 }
 
 // ── Biomas ────────────────────────────────────────────────────────────────────
@@ -100,6 +112,16 @@ const RELICS: RelicConfig[] = [
 // ── Meta-progresión ───────────────────────────────────────────────────────────
 const ESSENCE_KEY  = 'icfes_essence';
 const META_UPG_KEY = 'icfes_meta_upg';
+const GUILT_KEY    = 'icfes_guilt';
+
+// ── Scrolls in-run ────────────────────────────────────────────────────────────
+interface ScrollDrop { id:string; name:string; icon:string; desc:string; }
+const SCROLL_DROPS: ScrollDrop[] = [
+  { id:'atk',   name:'Tomo de Fuerza', icon:'⚔️',  desc:'+1 DMG esta run' },
+  { id:'hp',    name:'Tomo de Vida',   icon:'💗',  desc:'+1 HP máx esta run' },
+  { id:'soul',  name:'Tomo de Alma',   icon:'🔷',  desc:'+20 Alma máx esta run' },
+  { id:'speed', name:'Tomo de Viento', icon:'💨',  desc:'+25% velocidad esta run' },
+];
 
 interface MetaUpgrade { id:string; name:string; icon:string; desc:string; cost:number; maxLevel:number; }
 const META_UPGRADES: MetaUpgrade[] = [
@@ -155,8 +177,17 @@ export class GameScene extends Phaser.Scene {
   private runEssence         = 0;     // esencia ganada esta corrida
   private totalEssence       = 0;     // esencia persistente (localStorage)
   private metaUpgLevels:     Record<string,number> = {};
-  private essMultiplier      = 1.0;   // ×1.5 con ess_boost
+  private essMultiplier      = 1.0;
   private poisonTimer:       Phaser.Time.TimerEvent | null = null;
+  // ── Culpa (Blasphemous) ─────────────────────────────────────────────────
+  private guilt              = 0;       // 0-3, persiste entre runs
+  private guiltHud!:         Phaser.GameObjects.Text;
+  // ── Scrolls in-run (Dead Cells) ─────────────────────────────────────────
+  private scrollAtk          = 0;       // +DMG acumulado esta run
+  private scrollSoulMax      = 0;       // +Alma máx acumulada
+  private scrollSpeedMult    = 1.0;     // multiplicador velocidad
+  // ── Penitencia (Blasphemous) ─────────────────────────────────────────────
+  private penitencia:        'none'|'asceta'|'silencio' = 'none';
   private classBadge!:       Phaser.GameObjects.Text;
   private essenceHud!:       Phaser.GameObjects.Text;
   private qPanelBg!:         Phaser.GameObjects.Rectangle;
@@ -285,6 +316,9 @@ export class GameScene extends Phaser.Scene {
     this.runEssence = 0; this.enemySlowLeft = 0;
     this.nextWaveModifier = 'normal'; this.isEliteQuestion = false;
     this.questionDuration = QUESTION_TIME;
+    this.scrollAtk = 0; this.scrollSoulMax = 0; this.scrollSpeedMult = 1.0;
+    this.penitencia = 'none';
+    try { this.guilt = Math.min(3, parseInt(localStorage.getItem(GUILT_KEY)||'0',10)); } catch { this.guilt=0; }
     try { this.totalEssence = parseInt(localStorage.getItem(ESSENCE_KEY)||'0',10); } catch { this.totalEssence=0; }
     try { this.metaUpgLevels = JSON.parse(localStorage.getItem(META_UPG_KEY)||'{}') as Record<string,number>; } catch { this.metaUpgLevels={}; }
     this.applyMetaUpgrades();
@@ -398,6 +432,16 @@ export class GameScene extends Phaser.Scene {
     this.gndG3 = this.add.rectangle(GW/2,GROUND_Y+11,GW,12,0x00ff44,0.05).setDepth(3);
     this.tweens.add({ targets:[this.gndG1,this.gndG2,this.gndG3], alpha:{from:1,to:0.30}, duration:1800, yoyo:true, repeat:-1 });
 
+    // ── Plataformas ────────────────────────────────────────────────────────
+    GAME_PLATFORMS.forEach(p => {
+      const plat = this.add.rectangle(p.x, p.y, p.w, 18, 0x4422aa, 0.95).setDepth(3);
+      plat.setStrokeStyle(2, 0x8855ff, 0.9);
+      const glow = this.add.rectangle(p.x, p.y-7, p.w, 4, 0xaa88ff, 0.65).setDepth(3.5);
+      this.tweens.add({ targets:glow, alpha:{from:0.65,to:0.12}, duration:1400, yoyo:true, repeat:-1 });
+      this.add.rectangle(p.x - p.w/2 + 8,  p.y+14, 14, 28, 0x331188, 0.8).setDepth(2.8);
+      this.add.rectangle(p.x + p.w/2 - 8,  p.y+14, 14, 28, 0x331188, 0.8).setDepth(2.8);
+    });
+
     this.ambientEmitter = this.add.particles(0,0,'spark',{
       x:{min:30,max:GW-30}, y:{min:95,max:GROUND_Y-30},
       speedY:{min:-15,max:-55}, speedX:{min:-12,max:12},
@@ -456,9 +500,15 @@ export class GameScene extends Phaser.Scene {
     }).setOrigin(0.5).setDepth(11);
 
     // Esencia acumulada (meta-progresión)
-    this.essenceHud = this.add.text(GW-12, 33, `✨ ${this.totalEssence}`, {
+    this.essenceHud = this.add.text(GW-12, 22, `✨ ${this.totalEssence}`, {
       fontFamily:'monospace', fontSize:'10px', color:'#aaddff',
     }).setOrigin(1, 0.5).setDepth(11);
+
+    // Culpa (Blasphemous) — íconos de calavera
+    this.guiltHud = this.add.text(GW-12, 36, '', {
+      fontFamily:'monospace', fontSize:'10px', color:'#ff4444',
+    }).setOrigin(1, 0.5).setDepth(11);
+    this.updateGuiltHud();
 
     // Grenades + shield
     this.grenadeIcon = this.add.text(20,42,`💣 ${this.grenades}`,{
@@ -722,9 +772,23 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (!this.pOnGround) this.pVelY += P_GRAVITY * dt;
-    this.pX += this.pVelX * dt;
+    const prevPY = this.pY;
+    this.pX += this.pVelX * dt * this.scrollSpeedMult;
     this.pY += this.pVelY * dt;
 
+    // ── Colisión plataformas ───────────────────────────────────────────────
+    for (const plat of GAME_PLATFORMS) {
+      const inX = this.pX > plat.x - plat.w/2 && this.pX < plat.x + plat.w/2;
+      if (inX && this.pVelY >= 0 && prevPY <= plat.y && this.pY >= plat.y) {
+        this.pY = plat.y; this.pVelY = 0; this.pOnGround = true;
+      }
+    }
+    // Si estamos por encima del suelo y no sobre ninguna plataforma, caemos
+    if (this.pY < GROUND_Y && this.pOnGround) {
+      const onPlat = GAME_PLATFORMS.some(p =>
+        this.pX > p.x - p.w/2 && this.pX < p.x + p.w/2 && Math.abs(this.pY - p.y) < 5);
+      if (!onPlat) this.pOnGround = false;
+    }
     if (this.pY >= GROUND_Y) { this.pY = GROUND_Y; this.pVelY = 0; this.pOnGround = true; }
     this.pX = Phaser.Math.Clamp(this.pX, 24, GW - 24);
 
@@ -791,13 +855,40 @@ export class GameScene extends Phaser.Scene {
     const dir   = dx > 0 ? 1 : -1;
 
     // Velocidad según fase del boss + behavior
-    let speed = ENEMY_STATS[this.enemy.type].speed;
+    let speed: number = ENEMY_STATS[this.enemy.type].speed;
     if (this.enemy.type === 'boss') {
       if      (this.bossPhase >= 2) speed *= 2.5;
       else if (this.bossPhase >= 1) speed *= 1.6;
     }
-    if (behavior === 'turbo')            speed *= 1.9;   // Turbo: casi el doble
+    if (behavior === 'turbo')            speed *= 1.9;
     if (this.enemySlowLeft > 0)          speed *= 0.30;  // Lector class slow
+
+    // ── Status effects ────────────────────────────────────────────────────
+    if (this.enemy.statusLeft > 0) {
+      this.enemy.statusLeft -= dt;
+      if (this.enemy.statusLeft <= 0) {
+        this.enemy.status = 'none';
+        sprite.clearTint();
+        this.enemy.statusIcon?.destroy(); this.enemy.statusIcon = null;
+        if (behavior === 'turbo') sprite.setTint(0xffee44);
+        if (behavior === 'elite') sprite.setTint(0xdd88ff);
+        if (behavior === 'duplicator') sprite.setTint(0x44ffcc);
+      }
+    }
+    if (this.enemy.status === 'stunned') speed = 0;
+    if (this.enemy.status === 'slowed')  speed *= 0.28;
+    if (this.enemy.status === 'burning' && this.enemy.burnTicks > 0) {
+      this.enemy.burnTicks--;
+      this.time.delayedCall(900, () => {
+        if (this.enemy && this.enemy.hpCurrent > 0) {
+          this.dealDamage(1);
+          this.showFloatingText(this.enemy.sprite.x, this.enemy.sprite.y-40, '🔥-1', 0xff5500);
+        }
+      });
+    }
+    if (this.enemy.statusIcon) {
+      this.enemy.statusIcon.setPosition(sprite.x, sprite.y - spriteH - 30);
+    }
 
     if (this.state === 'idle' && absDx > E_MELEE_RANGE) {
       sprite.x += dir * speed * dt;
@@ -925,7 +1016,8 @@ export class GameScene extends Phaser.Scene {
 
     const bob = this.tweens.add({ targets:sprite, y:GROUND_Y-5, duration:380, yoyo:true, repeat:-1 });
     this.enemy = { type, sprite, hpCurrent:stats.hp, hpMax:stats.hp, hpBg, hpFill, hpLabel, bob,
-      spriteH, warned:false, behavior, isDuplicate:false, behaviorGlow };
+      spriteH, warned:false, behavior, isDuplicate:false, behaviorGlow,
+      status:'none', statusLeft:0, burnTicks:0, statusIcon:null };
     this.bossPhase = 0;
     this.state = 'idle';
 
@@ -1123,6 +1215,25 @@ export class GameScene extends Phaser.Scene {
       if (q.type === 'grammar') dmg += 2;
       if (q.type === 'vocab')   dmg  = Math.max(0, dmg - 1);
     }
+
+    // ── Status effects según tipo de pregunta ─────────────────────────────
+    if (q.type === 'grammar') this.applyStatus('stunned', 2000);
+    if (q.type === 'vocab')   this.applyStatus('burning', 3000);
+    if (q.type === 'bonus')   this.applyStatus('slowed',  3500);
+
+    // ── Culpa reduce daño ─────────────────────────────────────────────────
+    dmg = Math.max(0, dmg - Math.floor(this.guilt / 2));
+
+    // Limpiar culpa al llegar a combo 5
+    if (this.combo >= 5 && this.guilt > 0) {
+      this.guilt = 0;
+      try { localStorage.setItem(GUILT_KEY,'0'); } catch { /* noop */ }
+      this.showFloatingText(this.pX, this.pY-110, '⚰️ ¡CULPA PURIFICADA!', 0xffaa44);
+      this.updateGuiltHud();
+    }
+
+    // ── Scroll +ATK bonus ─────────────────────────────────────────────────
+    dmg += this.scrollAtk;
     if (this.playerClass === 'lector' && this.enemy) {
       this.enemySlowLeft = 2500;
       this.showFloatingText(this.enemy.sprite.x, this.enemy.sprite.y-55, '📖 RALENTIZADO', 0x88aaff);
@@ -1364,8 +1475,15 @@ export class GameScene extends Phaser.Scene {
       this.showFloatingText(ex, ey-70, '👥 ¡SE DIVIDE!', 0x44ffcc);
     }
 
-    // Destruir glow de behavior
+    // Destruir glow y status icon
     this.enemy?.behaviorGlow?.destroy();
+    this.enemy?.statusIcon?.destroy();
+
+    // ── Drop de Scroll (20% chance, no boss) ──────────────────────────────
+    if (type !== 'boss' && Math.random() < 0.20) {
+      const scroll = SCROLL_DROPS[Math.floor(Math.random()*SCROLL_DROPS.length)];
+      this.applyScroll(scroll, ex, ey);
+    }
 
     // Esencia por kill
     this.addRunEssence(type === 'boss' ? 10 : 2);
@@ -1602,6 +1720,34 @@ export class GameScene extends Phaser.Scene {
     } catch { /* noop */ }
   }
 
+  private applyStatus(status: EnemyStatus, durationMs: number): void {
+    if (!this.enemy) return;
+    this.enemy.status     = status;
+    this.enemy.statusLeft = durationMs;
+    const tints: Record<EnemyStatus,number> = {
+      none:0xffffff, stunned:0x4488ff, burning:0xff4400, slowed:0x44ffcc,
+    };
+    const icons: Record<EnemyStatus,string> = {
+      none:'', stunned:'❄️ STUN', burning:'🔥 BURN', slowed:'🐌 SLOW',
+    };
+    this.enemy.sprite.setTint(tints[status]);
+    this.enemy.statusIcon?.destroy();
+    if (status !== 'none') {
+      this.enemy.statusIcon = this.add.text(
+        this.enemy.sprite.x, this.enemy.sprite.y - this.enemy.spriteH - 30,
+        icons[status],
+        { fontFamily:'monospace', fontSize:'11px', color:'#ffffff',
+          backgroundColor:'#00000088', padding:{x:4,y:2} }
+      ).setOrigin(0.5).setDepth(14);
+    }
+    if (status === 'burning') this.enemy.burnTicks = 3;
+  }
+
+  private updateGuiltHud(): void {
+    const skulls = '☠️'.repeat(this.guilt);
+    this.guiltHud?.setText(this.guilt > 0 ? `${skulls} CULPA` : '');
+  }
+
   private updateSoulBar(): void {
     const threshold = this.hasRelic('soul_boost') ? 70 : SOUL_MAX;
     const pct = Math.min(this.soul/SOUL_MAX, 1);
@@ -1826,6 +1972,9 @@ export class GameScene extends Phaser.Scene {
   private doGameOver(): void {
     this.state='game_over'; this.timerEvent?.remove(); this.enemy?.bob.stop();
     this.saveEssence();
+    // Culpa: acumular al morir (máx 3)
+    const newGuilt = Math.min(3, this.guilt + 1);
+    try { localStorage.setItem(GUILT_KEY, String(newGuilt)); } catch { /* noop */ }
     this.scene.stop('CRT');
     this.cameras.main.shake(500,0.03);
     this.time.delayedCall(600,()=>{
@@ -1837,12 +1986,37 @@ export class GameScene extends Phaser.Scene {
 
   private doVictory(): void {
     this.state='game_over';
-    this.addRunEssence(25); // bonus por victoria
+    this.addRunEssence(25);
     this.saveEssence();
+    // Victoria limpia culpa acumulada
+    try { localStorage.setItem(GUILT_KEY,'0'); } catch { /* noop */ }
     this.scene.stop('CRT');
     this.cameras.main.fadeOut(800,255,255,200);
     this.time.delayedCall(900,()=>
       this.scene.start('GameOver',{score:this.score,wave:WAVES.length,win:true,essence:this.runEssence}));
+  }
+
+  private applyScroll(scroll: ScrollDrop, x: number, y: number): void {
+    switch(scroll.id) {
+      case 'atk':   this.scrollAtk++;
+        this.showFloatingText(x, y-50, `${scroll.icon} ${scroll.name}!`, 0xff8844); break;
+      case 'hp':
+        this.maxHp++; this.hp = Math.min(this.hp+1, this.maxHp);
+        this.updateHearts();
+        this.showFloatingText(x, y-50, `${scroll.icon} ${scroll.name}!`, 0xff88aa); break;
+      case 'soul':
+        this.scrollSoulMax += 20;
+        this.showFloatingText(x, y-50, `${scroll.icon} ${scroll.name}!`, 0x4488ff); break;
+      case 'speed':
+        this.scrollSpeedMult = Math.min(this.scrollSpeedMult + 0.25, 1.75);
+        this.showFloatingText(x, y-50, `${scroll.icon} ${scroll.name}!`, 0x44ffcc); break;
+    }
+    this.playBeep('relic');
+    // Icono flotante en posición del scroll
+    const icon = this.add.text(x, y-20, scroll.icon, {fontFamily:'monospace',fontSize:'28px'})
+      .setOrigin(0.5).setDepth(15);
+    this.tweens.add({ targets:icon, y:y-80, alpha:0, duration:1200, ease:'Power2',
+      onComplete:()=>icon.destroy() });
   }
 
   private addRunEssence(amount: number): void {
@@ -2024,7 +2198,7 @@ export class GameScene extends Phaser.Scene {
         this.tweens.add({targets:card,scaleX:1.1,scaleY:1.1,duration:120,yoyo:true});
         this.time.delayedCall(380, ()=>{
           this.tweens.add({targets:[overlay,cont],alpha:0,duration:300,ease:'Power2',
-            onComplete:()=>{ overlay.destroy(); cont.destroy(); onDone(); }});
+            onComplete:()=>{ overlay.destroy(); cont.destroy(); this.showPenitenciaSelector(onDone); }});
         });
       });
 
@@ -2091,5 +2265,67 @@ export class GameScene extends Phaser.Scene {
 
     cont.setAlpha(0).setY(28);
     this.tweens.add({targets:cont, alpha:1, y:0, duration:380, ease:'Back.easeOut'});
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🙏  PENITENCIA (Blasphemous — modificadores opcionales de run)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private showPenitenciaSelector(onDone: ()=>void): void {
+    const overlay = this.add.rectangle(GW/2,GH/2,GW,GH,0x000000,0.90).setDepth(40);
+    const cont    = this.add.container(0,0).setDepth(41);
+
+    const title = this.add.text(GW/2, 70, '🙏  PENITENCIA', {
+      fontFamily:'monospace', fontSize:'22px', color:'#ffaa44', fontStyle:'bold',
+      stroke:'#331100', strokeThickness:2,
+    }).setOrigin(0.5);
+    const sub = this.add.text(GW/2, 100, 'Elige un desafío voluntario. Mayor riesgo, mayor recompensa.', {
+      fontFamily:'monospace', fontSize:'11px', color:'#886644',
+    }).setOrigin(0.5);
+    cont.add([title, sub]);
+
+    type PenDef = { id:'none'|'asceta'|'silencio'; icon:string; name:string; desc:string; col:number; };
+    const opts: PenDef[] = [
+      { id:'none',     icon:'🕊️', name:'SIN PENITENCIA', col:0x888888,
+        desc:'Run normal.\nNingún modificador.\nRecompensas estándar.' },
+      { id:'asceta',   icon:'⚔️', name:'MODO ASCETA',    col:0xff4422,
+        desc:'HP máx = 2.\nDMG base ×2.\nRiesgoso pero letal.' },
+      { id:'silencio', icon:'🔇', name:'MODO SILENCIO',  col:0x8844ff,
+        desc:'Sin telegrafía.\nPreguntas +50% recompensa.\nEnemigos más imprevisibles.' },
+    ];
+
+    const CW=195, spacing=215;
+    const startX = GW/2 - spacing*(opts.length-1)/2;
+
+    opts.forEach((opt,i) => {
+      const cx = startX + i*spacing, cy = GH/2+24;
+      const card = this.add.rectangle(cx,cy,CW,190,0x020c1a,0.96).setInteractive({useHandCursor:true});
+      card.setStrokeStyle(2,opt.col,0.7);
+
+      const iconT  = this.add.text(cx,cy-70,opt.icon,  {fontFamily:'monospace',fontSize:'32px'}).setOrigin(0.5);
+      const nameT  = this.add.text(cx,cy-28,opt.name,  {fontFamily:'monospace',fontSize:'12px',color:'#'+opt.col.toString(16).padStart(6,'0'),fontStyle:'bold',wordWrap:{width:CW-14},align:'center'}).setOrigin(0.5);
+      const descT  = this.add.text(cx,cy+20,opt.desc,  {fontFamily:'monospace',fontSize:'10px',color:'#aabbcc',wordWrap:{width:CW-18},align:'center'}).setOrigin(0.5);
+
+      card.on('pointerover',  ()=>{ card.setFillStyle(0x0a2040,0.98); card.setStrokeStyle(3,opt.col,1); });
+      card.on('pointerout',   ()=>{ card.setFillStyle(0x020c1a,0.96); card.setStrokeStyle(2,opt.col,0.7); });
+      card.on('pointerdown',  ()=>{
+        this.penitencia = opt.id;
+        // Aplicar efectos
+        if (opt.id === 'asceta') {
+          this.maxHp = 2; this.hp = 2; this.updateHearts();
+          this.showFloatingText(GW/2,GH/2,'⚔️ MODO ASCETA — HP=2, DMG×2',0xff4422);
+        }
+        this.playBeep(opt.id==='none' ? 'dodge' : 'enrage');
+        this.tweens.add({targets:card,scaleX:1.1,scaleY:1.1,duration:120,yoyo:true});
+        this.time.delayedCall(350,()=>{
+          this.tweens.add({targets:[overlay,cont],alpha:0,duration:280,ease:'Power2',
+            onComplete:()=>{ overlay.destroy(); cont.destroy(); onDone(); }});
+        });
+      });
+      cont.add([card,iconT,nameT,descT]);
+    });
+
+    cont.setAlpha(0).setY(20);
+    this.tweens.add({targets:cont,alpha:1,y:0,duration:380,ease:'Back.easeOut'});
   }
 }
