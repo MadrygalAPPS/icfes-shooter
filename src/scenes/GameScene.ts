@@ -266,6 +266,9 @@ export class GameScene extends Phaser.Scene {
   private playerSprite!: Phaser.GameObjects.Sprite;
   private shieldSprite!: Phaser.GameObjects.Image;
   private muzzleFlash!:  Phaser.GameObjects.Rectangle;
+  private playerAura!:   Phaser.GameObjects.Ellipse;   // aura de clase
+  private comboRing!:    Phaser.GameObjects.Ellipse;   // anillo de combo alto
+  private dustEmitter!:  Phaser.GameObjects.Particles.ParticleEmitter; // polvo al correr
 
   // ── HUD ──────────────────────────────────────────────────────────────────
   private hearts:       Phaser.GameObjects.Image[] = [];
@@ -535,6 +538,13 @@ export class GameScene extends Phaser.Scene {
   }
 
   private buildPlayer(): void {
+    // Aura de clase (debajo del sprite, depth 6)
+    this.playerAura = this.add.ellipse(this.pX, this.pY - 2, 68, 22, 0xffffff, 0)
+      .setDepth(6);
+    // Anillo de combo (visible solo con combo >= 5)
+    this.comboRing = this.add.ellipse(this.pX, this.pY - 38, 52, 52, 0xffdd44, 0)
+      .setDepth(6).setStrokeStyle(2, 0xffdd44, 0);
+
     this.playerSprite = this.add.sprite(this.pX,this.pY,'hero-idle-1')
       .setOrigin(0.5,1).setDepth(7).setScale(1.4);
     this.playerSprite.play('hero_idle');
@@ -542,6 +552,15 @@ export class GameScene extends Phaser.Scene {
       .setAlpha(0).setDepth(5).setScale(1.2);
     this.muzzleFlash = this.add.rectangle(this.pX+68,this.pY-52,18,14,0xffffaa,1)
       .setAlpha(0).setDepth(8);
+
+    // Polvo al correr
+    this.dustEmitter = this.add.particles(this.pX, this.pY, 'spark', {
+      speed: { min:20, max:55 }, angle: { min:160, max:200 },
+      scale: { start:0.18, end:0 }, alpha: { start:0.55, end:0 },
+      lifespan: { min:200, max:400 }, gravityY:90,
+      tint:[0xaaaaaa, 0xccbbaa, 0x998877],
+      frequency:-1,   // emisión manual (explode mode)
+    }).setDepth(6.5);
   }
 
   private buildHUD(): void {
@@ -1007,6 +1026,26 @@ export class GameScene extends Phaser.Scene {
     this.muzzleFlash.setPosition(this.pX+(this.pFacingRight?68:-68), this.pY-52);
     this.atkHint.setPosition(this.pX, this.pY-118);
     this.dashCDIcon.setPosition(this.pX, this.pY-100);
+    this.playerAura.setPosition(this.pX, this.pY - 4);
+    this.comboRing.setPosition(this.pX, this.pY - 38);
+
+    // ── Combo ring — brilla con combo >= 5 ──────────────────────────────────
+    if (this.combo >= 10) {
+      this.comboRing.setStrokeStyle(3, 0xff4400, 0.9);
+      this.comboRing.setFillStyle(0xff2200, 0.08);
+    } else if (this.combo >= 5) {
+      this.comboRing.setStrokeStyle(2, 0xffdd44, 0.75);
+      this.comboRing.setFillStyle(0xffdd44, 0.05);
+    } else {
+      this.comboRing.setStrokeStyle(0, 0x000000, 0);
+      this.comboRing.setFillStyle(0x000000, 0);
+    }
+
+    // ── Polvo de pasos (en suelo, moviéndose) ──────────────────────────────
+    if (this.pOnGround && Math.abs(this.pVelX) > 60 && !this.pDashing) {
+      this.dustEmitter.setPosition(this.pX, this.pY);
+      this.dustEmitter.explode(2);
+    }
 
     // Tinte de i-frames (parpadeo durante dodge)
     if (this.pDodging || this.pIframeLeft > 0)
@@ -2742,7 +2781,15 @@ export class GameScene extends Phaser.Scene {
         const classTints: Record<PlayerClass,number> = {
           grammatico: 0xffcc88, vocabulista: 0x88ffcc, lector: 0xaabbff, bilingue: 0xffffdd,
         };
+        const classAuras: Record<PlayerClass,number> = {
+          grammatico: 0xff8844, vocabulista: 0x44ffaa, lector: 0x6699ff, bilingue: 0xffdd55,
+        };
         this.playerSprite.setTint(classTints[cls.id]);
+        // Activar aura de clase con pulso
+        this.playerAura.setFillStyle(classAuras[cls.id], 0.22);
+        this.tweens.add({ targets:this.playerAura,
+          scaleX:{from:1,to:1.35}, scaleY:{from:1,to:1.35}, alpha:{from:0.22,to:0.06},
+          duration:900, yoyo:true, repeat:-1, ease:'Sine.easeInOut' });
         this.playBeep('relic');
         // Bilingüe: 1 reliquia inicial
         if (cls.id === 'bilingue') {
