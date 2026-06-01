@@ -87,6 +87,14 @@ interface ActiveEnemy {
   statusIcon:   Phaser.GameObjects.Text | null;
 }
 
+// ── Proyectiles enemigos ──────────────────────────────────────────────────────
+interface EnemyProjectile {
+  x: number; y: number; velX: number;
+  visual: Phaser.GameObjects.Ellipse;
+  trail: Phaser.GameObjects.Text;   // emoji del proyectil
+  dmg: number;
+}
+
 // ── Biomas ────────────────────────────────────────────────────────────────────
 interface BiomeConfig {
   name: string; icon: string; bgTint: number;
@@ -300,6 +308,9 @@ export class GameScene extends Phaser.Scene {
   // ── Pausa ────────────────────────────────────────────────────────────────
   private paused          = false;
   private pauseOverlay!:  Phaser.GameObjects.Container | null;
+  // ── Proyectiles enemigos ─────────────────────────────────────────────────
+  private projectiles:    EnemyProjectile[] = [];
+  private projShootTimer  = 0;    // ms hasta próximo disparo
 
   // ── Panel pregunta ───────────────────────────────────────────────────────
   private qPanel!:     Phaser.GameObjects.Container;
@@ -357,6 +368,7 @@ export class GameScene extends Phaser.Scene {
     this.penitencia = 'none'; this.starMoveCdLeft = 0; this.currentWeapon = null;
     this.obstacleHurtLeft = 0; this.acidDmgAccum = 0;
     this.notchesUsed = 0; this.paused = false; this.pauseOverlay = null;
+    this.projectiles = []; this.projShootTimer = 0;
     try { this.guilt = Math.min(3, parseInt(localStorage.getItem(GUILT_KEY)||'0',10)); } catch { this.guilt=0; }
     try { this.totalEssence = parseInt(localStorage.getItem(ESSENCE_KEY)||'0',10); } catch { this.totalEssence=0; }
     try { this.metaUpgLevels = JSON.parse(localStorage.getItem(META_UPG_KEY)||'{}') as Record<string,number>; } catch { this.metaUpgLevels={}; }
@@ -407,6 +419,7 @@ export class GameScene extends Phaser.Scene {
     if (this.enemySlowLeft > 0) this.enemySlowLeft -= delta;
     this.updatePlayer(dt);
     this.updateEnemy(dt);
+    this.updateProjectiles(dt);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1103,6 +1116,20 @@ export class GameScene extends Phaser.Scene {
       this.onEnemyArrived(false);
     }
 
+    // ── Proyectiles (skeleton, golem, boss en phase 1+) ───────────────────
+    const canShoot = this.state === 'idle'
+      && (this.enemy.type === 'skeleton' || this.enemy.type === 'boss' || this.enemy.type === 'golem')
+      && absDx > E_MELEE_RANGE + 20 && absDx < 450;
+
+    if (canShoot) {
+      this.projShootTimer -= dt * 1000;
+      if (this.projShootTimer <= 0) {
+        const cooldown = this.enemy.type === 'boss' ? 2800 : 4500;
+        this.projShootTimer = cooldown + Math.random() * 1500;
+        this.spawnEnemyProjectile(sprite.x, sprite.y - spriteH * 0.55, dir < 0 ? -1 : 1);
+      }
+    }
+
     const barY = sprite.y - spriteH - 10;
     hpBg.setPosition(sprite.x, barY);
     hpLabel.setPosition(sprite.x, barY-10);
@@ -1129,6 +1156,70 @@ export class GameScene extends Phaser.Scene {
       this.pIsAttacking = false; this.muzzleFlash.setAlpha(0);
     });
     this.onEnemyArrived(true);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 💥  PROYECTILES ENEMIGOS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private spawnEnemyProjectile(ex: number, ey: number, dir: number): void {
+    const isBoss = this.enemy?.type === 'boss';
+    const color  = isBoss ? 0xff2200 : 0xaa44ff;
+    const emoji  = isBoss ? '🔥' : '💀';
+    const speed  = isBoss ? 420 : 310;
+    const dmg    = isBoss ? 2 : 1;
+
+    const visual = this.add.ellipse(ex, ey, isBoss ? 22 : 16, isBoss ? 22 : 16, color, 0.9).setDepth(12);
+    const trail  = this.add.text(ex, ey, emoji, {fontSize: isBoss ? '18px' : '14px'})
+      .setOrigin(0.5).setDepth(12);
+
+    // Pulso visual
+    this.tweens.add({ targets:visual, scaleX:{from:0.7,to:1.2}, scaleY:{from:0.7,to:1.2},
+      duration:200, yoyo:true, repeat:-1 });
+
+    // SFX
+    this.playBeep('special');
+
+    this.projectiles.push({ x: ex, y: ey, velX: dir * speed, visual, trail, dmg });
+  }
+
+  private updateProjectiles(dt: number): void {
+    if (this.projectiles.length === 0) return;
+
+    for (let i = this.projectiles.length - 1; i >= 0; i--) {
+      const p = this.projectiles[i];
+      p.x += p.velX * dt;
+
+      p.visual.setPosition(p.x, p.y);
+      p.trail.setPosition(p.x, p.y);
+
+      // Fuera de pantalla — destruir
+      if (p.x < -60 || p.x > GW + 60) {
+        p.visual.destroy(); p.trail.destroy();
+        this.projectiles.splice(i, 1);
+        continue;
+      }
+
+      // Colisión con jugador (solo si no hay i-frames)
+      const inX = Math.abs(p.x - this.pX) < 24;
+      const inY = Math.abs(p.y - (this.pY - 40)) < 38;
+      if (inX && inY && this.pIframeLeft <= 0 && !this.pDodging) {
+        // Hit!
+        p.visual.destroy(); p.trail.destroy();
+        this.projectiles.splice(i, 1);
+
+        // Flash rojo en pantalla
+        const flash = this.add.rectangle(GW/2,GH/2,GW,GH,0xff0000,0.25).setDepth(22);
+        this.tweens.add({ targets:flash, alpha:0, duration:250, onComplete:()=>flash.destroy() });
+
+        this.showFloatingText(this.pX, this.pY-70,
+          `${p.dmg === 2 ? '🔥' : '💀'} -${p.dmg} HP`, 0xff3333);
+        this.pIframeLeft = 900;  // invencibilidad temporal
+        for (let d = 0; d < p.dmg; d++) {
+          this.time.delayedCall(d * 80, () => this.playerHit());
+        }
+      }
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1740,6 +1831,11 @@ export class GameScene extends Phaser.Scene {
     const ex = sprite.x, ey = sprite.y;
 
     bob.stop(); sprite.stop(); hpBg.destroy(); hpFill.destroy(); hpLabel.destroy();
+
+    // Limpiar proyectiles pendientes del enemigo
+    for (const p of this.projectiles) { p.visual.destroy(); p.trail.destroy(); }
+    this.projectiles = [];
+    this.projShootTimer = 0;
 
     const base = ENEMY_STATS[type].score;
     const mult = 1 + Math.floor(this.combo/3)*0.25;
