@@ -44,7 +44,9 @@ const P_IFRAME_MS    = 380;          // ms de invencibilidad en dodge
 const E_CHASE_RANGE  = 180;
 const E_MELEE_RANGE  = 65;
 const E_WARN_RANGE   = 115;          // telegrafía antes de melee
-const SHIELD_FAST_MS = 4000;         // ventana para romper escudo del shielded enemy
+const SHIELD_FAST_MS   = 4000;       // ventana para romper escudo del shielded enemy
+const STAR_MOVE_CD_MS  = 12000;      // cooldown Star Move (Streets of Rage)
+const STAR_MOVE_DMG    = 5;          // daño base del Star Move
 
 // ── Pregunta ──────────────────────────────────────────────────────────────────
 const Q_PH = 200;
@@ -113,6 +115,16 @@ const RELICS: RelicConfig[] = [
 const ESSENCE_KEY  = 'icfes_essence';
 const META_UPG_KEY = 'icfes_meta_upg';
 const GUILT_KEY    = 'icfes_guilt';
+
+// ── Armas in-run (Dead Cells) ─────────────────────────────────────────────────
+type WeaponId = 'sword'|'bow'|'hammer'|'dagger';
+interface WeaponDrop { id:WeaponId; name:string; icon:string; desc:string; color:string; }
+const WEAPON_DROPS: WeaponDrop[] = [
+  { id:'sword',  name:'Espada Arcana',  icon:'⚔️',  desc:'+2 DMG en golpe Z',           color:'#ff8844' },
+  { id:'bow',    name:'Arco del Viento',icon:'🏹',  desc:'Z ignora escudo del enemigo', color:'#44ffaa' },
+  { id:'hammer', name:'Martillo Rúnico',icon:'🔨',  desc:'Z stun 2s automático',        color:'#88aaff' },
+  { id:'dagger', name:'Daga Sombría',   icon:'🗡️',  desc:'Z siempre golpe doble',       color:'#ffdd55' },
+];
 
 // ── Scrolls in-run ────────────────────────────────────────────────────────────
 interface ScrollDrop { id:string; name:string; icon:string; desc:string; }
@@ -262,7 +274,12 @@ export class GameScene extends Phaser.Scene {
     space:Phaser.Input.Keyboard.Key; shift:Phaser.Input.Keyboard.Key;
     z:Phaser.Input.Keyboard.Key;     x:Phaser.Input.Keyboard.Key;
     c:Phaser.Input.Keyboard.Key;     v:Phaser.Input.Keyboard.Key;
+    e:Phaser.Input.Keyboard.Key;
   };
+  private starMoveCdLeft  = 0;   // ms cooldown Star Move
+  private starMoveHud!:   Phaser.GameObjects.Text;
+  private currentWeapon:  WeaponId | null = null;
+  private weaponHud!:     Phaser.GameObjects.Text;
 
   // ── Panel pregunta ───────────────────────────────────────────────────────
   private qPanel!:     Phaser.GameObjects.Container;
@@ -317,7 +334,7 @@ export class GameScene extends Phaser.Scene {
     this.nextWaveModifier = 'normal'; this.isEliteQuestion = false;
     this.questionDuration = QUESTION_TIME;
     this.scrollAtk = 0; this.scrollSoulMax = 0; this.scrollSpeedMult = 1.0;
-    this.penitencia = 'none';
+    this.penitencia = 'none'; this.starMoveCdLeft = 0; this.currentWeapon = null;
     try { this.guilt = Math.min(3, parseInt(localStorage.getItem(GUILT_KEY)||'0',10)); } catch { this.guilt=0; }
     try { this.totalEssence = parseInt(localStorage.getItem(ESSENCE_KEY)||'0',10); } catch { this.totalEssence=0; }
     try { this.metaUpgLevels = JSON.parse(localStorage.getItem(META_UPG_KEY)||'{}') as Record<string,number>; } catch { this.metaUpgLevels={}; }
@@ -544,6 +561,19 @@ export class GameScene extends Phaser.Scene {
     this.dashCDIcon = this.add.text(this.pX,this.pY-100,'⚡ listo',{
       fontFamily:'monospace', fontSize:'9px', color:'#88aaff',
     }).setOrigin(0.5,1).setDepth(16).setVisible(false);
+
+    // Star Move HUD — abajo izquierda
+    this.starMoveHud = this.add.text(20, GH-16,
+      '⭐ STAR MOVE [E]  listo', {
+      fontFamily:'monospace', fontSize:'10px', color:'#ffee55',
+      backgroundColor:'#00000099', padding:{x:4,y:2},
+    }).setOrigin(0,1).setDepth(11);
+
+    // Arma actual — esquina inferior derecha
+    this.weaponHud = this.add.text(GW-14, GH-16, '', {
+      fontFamily:'monospace', fontSize:'11px', color:'#ff8844',
+      backgroundColor:'#00000099', padding:{x:4,y:2},
+    }).setOrigin(1,1).setDepth(11);
   }
 
   // ── Panel pregunta ───────────────────────────────────────────────────────
@@ -681,7 +711,9 @@ export class GameScene extends Phaser.Scene {
       x:     kb.addKey(Phaser.Input.Keyboard.KeyCodes.X),
       c:     kb.addKey(Phaser.Input.Keyboard.KeyCodes.C),
       v:     kb.addKey(Phaser.Input.Keyboard.KeyCodes.V),
+      e:     kb.addKey(Phaser.Input.Keyboard.KeyCodes.E),
     };
+    this.mk.e.on('down', () => this.useStarMove());
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -694,6 +726,16 @@ export class GameScene extends Phaser.Scene {
                 || this.state === 'path_select';
 
     // ── Cooldowns ───────────────────────────────────────────────────────────
+    if (this.starMoveCdLeft > 0) {
+      this.starMoveCdLeft -= dt * 1000;
+      if (this.starMoveCdLeft <= 0) {
+        this.starMoveCdLeft = 0;
+        this.starMoveHud.setText('⭐ STAR MOVE [E]  listo').setColor('#ffee55');
+      } else {
+        const secLeft = Math.ceil(this.starMoveCdLeft / 1000);
+        this.starMoveHud.setText(`⭐ STAR MOVE [E]  ${secLeft}s`).setColor('#888844');
+      }
+    }
     if (!this.pCanDash) {
       this.pDashCdLeft -= dt*1000;
       if (this.pDashCdLeft <= 0) { this.pCanDash = true; this.dashCDIcon.setVisible(false); }
@@ -1234,6 +1276,24 @@ export class GameScene extends Phaser.Scene {
 
     // ── Scroll +ATK bonus ─────────────────────────────────────────────────
     dmg += this.scrollAtk;
+
+    // ── Weapon bonus (Dead Cells) ─────────────────────────────────────────
+    if (this.currentWeapon && reward === 'bullet') {
+      switch (this.currentWeapon) {
+        case 'sword':  dmg += 2; break;
+        case 'bow':
+          // Bow ignores shielded behavior damage penalty
+          if (this.enemy?.behavior === 'shielded') dmg = Math.max(dmg, 2);
+          break;
+        case 'hammer':
+          this.applyStatus('stunned', 2000);
+          break;
+        case 'dagger':
+          reward = 'double'; dmg = Math.max(dmg, 2);
+          break;
+      }
+    }
+
     if (this.playerClass === 'lector' && this.enemy) {
       this.enemySlowLeft = 2500;
       this.showFloatingText(this.enemy.sprite.x, this.enemy.sprite.y-55, '📖 RALENTIZADO', 0x88aaff);
@@ -1393,6 +1453,91 @@ export class GameScene extends Phaser.Scene {
     this.fireGrenade();
   }
 
+  // ── Star Move (Streets of Rage) — E ──────────────────────────────────────
+  private useStarMove(): void {
+    if (this.state === 'game_over') return;
+    if (this.starMoveCdLeft > 0)   return;
+    if (this.grenades < 1)         return;    // necesita al menos 1 granada
+
+    // Consume TODAS las granadas
+    const used = this.grenades;
+    this.grenades = 0;
+    this.grenadeIcon.setText(`💣 0`);
+
+    // Activa cooldown
+    this.starMoveCdLeft = STAR_MOVE_CD_MS;
+
+    // Si hay pregunta abierta, la cierra sin penalizar
+    if (this.state === 'questioning') {
+      this.hideQuestion();
+      this.state = 'shooting';
+    }
+
+    // ── Visual: onda expansiva + flash de pantalla ──────────────────────
+    this.hitFreeze(220);
+    this.playBeep('special');
+
+    // Flash blanco en toda la pantalla
+    const flash = this.add.rectangle(GW/2, GH/2, GW, GH, 0xffffff, 0.85).setDepth(30);
+    this.tweens.add({ targets:flash, alpha:0, duration:400, onComplete:()=>flash.destroy() });
+
+    // Onda expansiva desde el jugador
+    for (let r = 1; r <= 3; r++) {
+      this.time.delayedCall(r * 60, () => {
+        const ring = this.add.ellipse(this.pX, this.pY-38,
+          r * 80, r * 40, 0xffee44, 0.55 - r*0.1).setDepth(25);
+        this.tweens.add({
+          targets: ring, scaleX:2.5, scaleY:2.5, alpha:0,
+          duration: 450, ease:'Quad.easeOut',
+          onComplete: () => ring.destroy(),
+        });
+      });
+    }
+
+    // Texto STAR MOVE
+    const txt = this.add.text(GW/2, GH/2 - 40, `⭐ STAR MOVE ×${used}!`, {
+      fontFamily:'monospace', fontSize:'28px', color:'#ffee44', fontStyle:'bold',
+      stroke:'#884400', strokeThickness:4,
+    }).setOrigin(0.5).setDepth(31).setAlpha(0);
+    this.tweens.add({
+      targets:txt, alpha:{from:0,to:1}, y:{from:GH/2-10, to:GH/2-60},
+      duration:350, ease:'Back.easeOut',
+      onComplete:()=>{
+        this.tweens.add({ targets:txt, alpha:0, duration:500, delay:600,
+          onComplete:()=>txt.destroy() });
+      },
+    });
+
+    // ── Daño proporcional a granadas usadas ──────────────────────────────
+    if (this.enemy) {
+      const totalDmg = STAR_MOVE_DMG * used;
+
+      // Partículas de estrellas alrededor del enemigo
+      const ex = this.enemy.sprite.x, ey = this.enemy.sprite.y;
+      for (let i = 0; i < 8; i++) {
+        const star = this.add.text(
+          ex + Phaser.Math.Between(-60,60),
+          ey + Phaser.Math.Between(-60,20), '⭐', {fontSize:'16px'}
+        ).setDepth(28);
+        this.tweens.add({
+          targets:star, y:star.y-80, alpha:0,
+          duration:Phaser.Math.Between(500,900),
+          delay:i*40, ease:'Quad.easeOut',
+          onComplete:()=>star.destroy(),
+        });
+      }
+
+      this.time.delayedCall(200, () => {
+        if (!this.enemy) return;
+        this.dealDamage(totalDmg);
+        // Stun automático del Star Move
+        this.applyStatus('stunned', 2500);
+        this.showFloatingText(ex, ey-60, `⭐ -${totalDmg}`, 0xffee44);
+        this.addScore(50 * used);
+      });
+    }
+  }
+
   private dealDamage(amount: number): void {
     if (!this.enemy) return;
     let dmg = amount;
@@ -1483,6 +1628,11 @@ export class GameScene extends Phaser.Scene {
     if (type !== 'boss' && Math.random() < 0.20) {
       const scroll = SCROLL_DROPS[Math.floor(Math.random()*SCROLL_DROPS.length)];
       this.applyScroll(scroll, ex, ey);
+    }
+    // ── Drop de Arma (12% chance, no boss, no scroll mismo frame) ─────────
+    else if (type !== 'boss' && Math.random() < 0.12) {
+      const wpn = WEAPON_DROPS[Math.floor(Math.random()*WEAPON_DROPS.length)];
+      this.time.delayedCall(250, () => this.applyWeapon(wpn, ex, ey));
     }
 
     // Esencia por kill
@@ -2017,6 +2167,25 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5).setDepth(15);
     this.tweens.add({ targets:icon, y:y-80, alpha:0, duration:1200, ease:'Power2',
       onComplete:()=>icon.destroy() });
+  }
+
+  private applyWeapon(wpn: WeaponDrop, x: number, y: number): void {
+    this.currentWeapon = wpn.id;
+    this.weaponHud.setText(`${wpn.icon} ${wpn.name}`).setColor(wpn.color);
+    this.playBeep('relic');
+    this.showFloatingText(x, y-50, `${wpn.icon} ¡${wpn.name}!`, parseInt(wpn.color.replace('#',''), 16));
+
+    // Tarjeta pickup
+    const card = this.add.rectangle(x, y-35, 160, 44, 0x080820, 0.92).setDepth(22);
+    card.setStrokeStyle(2, parseInt(wpn.color.replace('#',''), 16));
+    const cardTxt = this.add.text(x, y-35, `${wpn.icon} ${wpn.name}\n${wpn.desc}`, {
+      fontFamily:'monospace', fontSize:'9px', color:wpn.color, align:'center',
+    }).setOrigin(0.5).setDepth(23);
+    this.tweens.add({
+      targets:[card,cardTxt], y:`-=50`, alpha:{from:1,to:0},
+      duration:1400, delay:600, ease:'Power2',
+      onComplete:()=>{ card.destroy(); cardTxt.destroy(); },
+    });
   }
 
   private addRunEssence(amount: number): void {
