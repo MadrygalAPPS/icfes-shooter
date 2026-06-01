@@ -1475,32 +1475,29 @@ export class GameScene extends Phaser.Scene {
       fontFamily:'monospace', fontSize:'18px', color:'#00ff88', fontStyle:'bold',
     }).setOrigin(0.5);
 
-    const controls = [
-      '← → / A D          Mover',
-      'SPACE / W / ↑       Saltar',
-      'SHIFT               Dash',
-      'Z / X / C           Atacar (acércate al enemigo)',
-      'V                   Dodge roll (i-frames)',
-      'G                   Granada',
-      'Q                   Especial de Alma',
-      'E                   Star Move (consume granadas)',
-      'ESC                 Pausa',
+    const ctrlDefs: Array<[string, string]> = [
+      ['← → / A D        Mover',                        '#aaddff'],
+      ['SPACE / W / ↑    Saltar',                       '#aaddff'],
+      ['SHIFT            Dash',                          '#ffdd88'],
+      ['Z / X / C        Atacar (acércate al enemigo)', '#ffdd88'],
+      ['V                Dodge roll (i-frames)',         '#ffdd88'],
+      ['G                Granada  ·  Q  Alma especial', '#cc99ff'],
+      ['E                Star Move (usa granadas)',      '#cc99ff'],
+      ['ESC              Pausa',                         '#99bbdd'],
     ];
 
-    controls.forEach((line, i) => {
-      const col = i < 2 ? '#aaddff' : i < 5 ? '#ffdd88' : '#cc99ff';
-      this.add.text(GW/2 - 240, GH/2 - 96 + i * 22, line, {
+    const ctrlTexts = ctrlDefs.map(([line, col], i) =>
+      this.add.text(GW/2 - 238, GH/2 - 78 + i * 22, line, {
         fontFamily:'monospace', fontSize:'11px', color:col,
-      }).setOrigin(0);
-      overlay.add(this.children.getByName('') as Phaser.GameObjects.GameObject ?? this.add.text(0,0,''));
-    });
+      }).setOrigin(0),
+    );
 
-    const hint = this.add.text(GW/2, GH/2 + 118, 'ESPACIO · ENTER — ¡Comenzar!', {
+    const hint = this.add.text(GW/2, GH/2 + 114, 'ESPACIO · ENTER — ¡Comenzar!', {
       fontFamily:'monospace', fontSize:'12px', color:'#ffee44',
     }).setOrigin(0.5);
     this.tweens.add({ targets:hint, alpha:{from:1,to:0.3}, duration:600, yoyo:true, repeat:-1 });
 
-    overlay.add([bg, panel, title, hint]);
+    overlay.add([bg, panel, title, hint, ...ctrlTexts]);
 
     // Cerrar al presionar espacio/enter o después de 8s
     const close = () => {
