@@ -294,6 +294,12 @@ export class GameScene extends Phaser.Scene {
   private weaponHud!:       Phaser.GameObjects.Text;
   private obstacleHurtLeft  = 0;   // ms de invulnerabilidad por obstáculo
   private acidDmgAccum      = 0;   // ms acumulados en ácido
+  // ── Notch system (Hollow Knight charms) ─────────────────────────────────
+  private notchesUsed     = 0;   // ranuras usadas por reliquias activas
+  private notchHud!:      Phaser.GameObjects.Text;
+  // ── Pausa ────────────────────────────────────────────────────────────────
+  private paused          = false;
+  private pauseOverlay!:  Phaser.GameObjects.Container | null;
 
   // ── Panel pregunta ───────────────────────────────────────────────────────
   private qPanel!:     Phaser.GameObjects.Container;
@@ -350,6 +356,7 @@ export class GameScene extends Phaser.Scene {
     this.scrollAtk = 0; this.scrollSoulMax = 0; this.scrollSpeedMult = 1.0;
     this.penitencia = 'none'; this.starMoveCdLeft = 0; this.currentWeapon = null;
     this.obstacleHurtLeft = 0; this.acidDmgAccum = 0;
+    this.notchesUsed = 0; this.paused = false; this.pauseOverlay = null;
     try { this.guilt = Math.min(3, parseInt(localStorage.getItem(GUILT_KEY)||'0',10)); } catch { this.guilt=0; }
     try { this.totalEssence = parseInt(localStorage.getItem(ESSENCE_KEY)||'0',10); } catch { this.totalEssence=0; }
     try { this.metaUpgLevels = JSON.parse(localStorage.getItem(META_UPG_KEY)||'{}') as Record<string,number>; } catch { this.metaUpgLevels={}; }
@@ -384,6 +391,7 @@ export class GameScene extends Phaser.Scene {
   // ═══════════════════════════════════════════════════════════════════════════
   update(_t: number, delta: number): void {
     if (this.state === 'game_over') return;
+    if (this.paused) return;
 
     if (this.state === 'questioning' && this.timerEvent) {
       this.timerElapsed += delta;
@@ -585,6 +593,12 @@ export class GameScene extends Phaser.Scene {
       fontFamily:'monospace', fontSize:'14px', color:'#ffffff',
     }).setOrigin(1,0.5).setDepth(11);
 
+    // Notch slots (Hollow Knight charms system)
+    this.notchHud = this.add.text(GW-10, 57, '', {
+      fontFamily:'monospace', fontSize:'9px', color:'#aaddff',
+    }).setOrigin(1,0.5).setDepth(11);
+    this.updateNotchHud();
+
     // ── Barra de Alma (debajo del HUD, y=62) ────────────────────────────
     this.add.rectangle(GW/2,62,GW,10,0x000c18,0.95).setOrigin(0.5).setDepth(10);
     this.soulBarBg   = this.add.rectangle(4,62,GW-8,8,0x001a30,1).setOrigin(0,0.5).setDepth(10);
@@ -758,6 +772,65 @@ export class GameScene extends Phaser.Scene {
       e:     kb.addKey(Phaser.Input.Keyboard.KeyCodes.E),
     };
     this.mk.e.on('down', () => this.useStarMove());
+
+    // ESC — Pausa
+    kb.on('keydown-ESC', () => this.togglePause());
+  }
+
+  // ── Pausa ────────────────────────────────────────────────────────────────────
+  private togglePause(): void {
+    // No pausar si está en overlay
+    if (this.state === 'game_over' || this.state === 'class_select'
+     || this.state === 'relic_pick' || this.state === 'path_select') return;
+
+    this.paused = !this.paused;
+
+    if (this.paused) {
+      this.physics.pause?.();
+      this.tweens.pauseAll();
+      this.time.paused = true;
+
+      const ov = this.add.container(0,0).setDepth(60);
+      this.pauseOverlay = ov;
+
+      const bg = this.add.rectangle(GW/2, GH/2, GW, GH, 0x000000, 0.78);
+      const panel = this.add.rectangle(GW/2, GH/2, 360, 180, 0x030920, 0.97);
+      panel.setStrokeStyle(2, 0x4488ff);
+
+      const title = this.add.text(GW/2, GH/2-50, '⏸  PAUSA', {
+        fontFamily:'monospace', fontSize:'28px', color:'#4488ff', fontStyle:'bold',
+      }).setOrigin(0.5);
+      const hint1 = this.add.text(GW/2, GH/2-10, 'ESC — Continuar', {
+        fontFamily:'monospace', fontSize:'13px', color:'#aaccff',
+      }).setOrigin(0.5);
+      const hint2 = this.add.text(GW/2, GH/2+18, 'R — Reiniciar desde inicio', {
+        fontFamily:'monospace', fontSize:'11px', color:'#778899',
+      }).setOrigin(0.5);
+      const hint3 = this.add.text(GW/2, GH/2+44, 'M — Volver al menú', {
+        fontFamily:'monospace', fontSize:'11px', color:'#778899',
+      }).setOrigin(0.5);
+
+      ov.add([bg, panel, title, hint1, hint2, hint3]);
+
+      // Teclas extra dentro de pausa
+      const onR = () => { if (this.paused) { this.resumeGame(); this.scene.start('Game'); } };
+      const onM = () => { if (this.paused) { this.resumeGame(); this.scene.start('Menu'); } };
+      this.input.keyboard?.once('keydown-R', onR);
+      this.input.keyboard?.once('keydown-M', onM);
+
+    } else {
+      this.resumeGame();
+    }
+  }
+
+  private resumeGame(): void {
+    this.paused = false;
+    this.tweens.resumeAll();
+    this.time.paused = false;
+    if (this.pauseOverlay) {
+      this.pauseOverlay.destroy();
+      this.pauseOverlay = null;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2011,57 +2084,86 @@ export class GameScene extends Phaser.Scene {
     const pool = (Phaser.Utils.Array.Shuffle([...available]) as RelicConfig[]).slice(0,count);
     while (pool.length < count) pool.push(RELICS[Math.floor(Math.random()*RELICS.length)]);
 
+    const totalNotches = BASE_NOTCHES + ((this.metaUpgLevels['relic_plus']??0) >= 1 ? 2 : 0);
     const overlay = this.add.rectangle(GW/2,GH/2,GW,GH,0x000000,0.84).setDepth(40);
     const cont    = this.add.container(0,0).setDepth(41);
 
-    const titleTxt = this.add.text(GW/2,78,count>3?'✨ ELIGE UNA RELIQUIA  🔴 ×5':'✨ ELIGE UNA RELIQUIA',{
+    const titleTxt = this.add.text(GW/2,74,count>3?'✨ ELIGE UNA RELIQUIA  🔴 ×5':'✨ ELIGE UNA RELIQUIA',{
       fontFamily:'monospace', fontSize:'22px', color:'#ffdd55', fontStyle:'bold',
     }).setOrigin(0.5);
-    const subTxt = this.add.text(GW/2,108,'Completaste la ola — escoge tu recompensa.',{
+    const subTxt = this.add.text(GW/2,100,'Completaste la ola — escoge tu recompensa.',{
       fontFamily:'monospace', fontSize:'11px', color:'#88aacc',
     }).setOrigin(0.5);
-    cont.add([titleTxt, subTxt]);
+    // Notch budget display
+    const notchSlots = Array.from({length:totalNotches}, (_,i) => i < this.notchesUsed ? '■' : '□').join('');
+    const notchInfoTxt = this.add.text(GW/2, 118,
+      `Ranuras: ${notchSlots}  ${this.notchesUsed}/${totalNotches}`, {
+      fontFamily:'monospace', fontSize:'11px',
+      color: this.notchesUsed >= totalNotches ? '#ff4444' : '#aaddff',
+    }).setOrigin(0.5);
+    cont.add([titleTxt, subTxt, notchInfoTxt]);
 
     const CW = count > 3 ? 148 : 208;
-    const CH = 175;
+    const CH = 185;
     const spacing = count > 3 ? 157 : 252;
     const startX  = GW/2 - spacing * (count-1) / 2;
     const cardXs  = Array.from({length:count}, (_,i) => startX + i * spacing);
 
     pool.forEach((relic,i)=>{
-      const cx=cardXs[i], cy=GH/2+14;
-      const card = this.add.rectangle(cx,cy,CW,CH,0x020c1a,0.96).setInteractive({useHandCursor:true});
-      card.setStrokeStyle(2,0x334466,0.8);
+      const cx=cardXs[i], cy=GH/2+18;
+      const canAfford = (this.notchesUsed + relic.notchCost) <= totalNotches
+                     && !this.activeRelics.includes(relic.id);
+      const locked    = !canAfford;
 
-      const iconTxt = this.add.text(cx,cy-58,relic.icon,{fontFamily:'monospace',fontSize:'38px'}).setOrigin(0.5);
-      const nameTxt = this.add.text(cx,cy-10,relic.name,{
-        fontFamily:'monospace',fontSize:'13px',color:'#eeddaa',fontStyle:'bold',
+      const card = this.add.rectangle(cx,cy,CW,CH, locked ? 0x080808 : 0x020c1a, locked ? 0.5 : 0.96);
+      if (!locked) card.setInteractive({useHandCursor:true});
+      card.setStrokeStyle(2, locked ? 0x222222 : 0x334466, locked ? 0.4 : 0.8);
+
+      const iconTxt = this.add.text(cx,cy-62,relic.icon,{fontFamily:'monospace',fontSize:'38px'})
+        .setOrigin(0.5).setAlpha(locked ? 0.3 : 1);
+      const nameTxt = this.add.text(cx,cy-14,relic.name,{
+        fontFamily:'monospace',fontSize:'13px',color: locked ? '#555566' : '#eeddaa',fontStyle:'bold',
         wordWrap:{width:CW-18},align:'center',
       }).setOrigin(0.5);
-      const descTxt = this.add.text(cx,cy+30,relic.desc,{
-        fontFamily:'monospace',fontSize:'11px',color:'#88aacc',
+      const descTxt = this.add.text(cx,cy+26,relic.desc,{
+        fontFamily:'monospace',fontSize:'11px',color: locked ? '#333344' : '#88aacc',
         wordWrap:{width:CW-18},align:'center',
       }).setOrigin(0.5);
+      // Notch cost badge
+      const costStr = this.activeRelics.includes(relic.id) ? '✓ ya equipada'
+                    : `■×${relic.notchCost} ranura${relic.notchCost>1?'s':''}`;
+      const costTxt = this.add.text(cx, cy+72, costStr, {
+        fontFamily:'monospace', fontSize:'10px',
+        color: this.activeRelics.includes(relic.id) ? '#55ff88' : locked ? '#ff4444' : '#aaddff',
+      }).setOrigin(0.5);
 
-      card.on('pointerover',()=>{
-        card.setFillStyle(0x0a2040,0.98); card.setStrokeStyle(2.5,0xffdd55,1);
-        this.tweens.add({ targets:[iconTxt,nameTxt,descTxt], scaleX:1.06, scaleY:1.06, duration:100 });
-      });
-      card.on('pointerout',()=>{
-        card.setFillStyle(0x020c1a,0.96); card.setStrokeStyle(2,0x334466,0.8);
-        this.tweens.add({ targets:[iconTxt,nameTxt,descTxt], scaleX:1, scaleY:1, duration:100 });
-      });
-      card.on('pointerdown',()=>{
-        this.applyRelic(relic);
-        this.playBeep('relic');
-        this.tweens.add({ targets:card, scaleX:1.08, scaleY:1.08, duration:120, yoyo:true });
-        this.time.delayedCall(380,()=>{
-          this.tweens.add({ targets:[overlay,cont], alpha:0, duration:280, ease:'Power2',
-            onComplete:()=>{ overlay.destroy(); cont.destroy(); onDone(); } });
+      // Lock icon overlay
+      if (locked && !this.activeRelics.includes(relic.id)) {
+        const lockIcon = this.add.text(cx, cy-30, '🔒', {fontSize:'22px'}).setOrigin(0.5).setAlpha(0.5);
+        cont.add(lockIcon);
+      }
+
+      if (!locked) {
+        card.on('pointerover',()=>{
+          card.setFillStyle(0x0a2040,0.98); card.setStrokeStyle(2.5,0xffdd55,1);
+          this.tweens.add({ targets:[iconTxt,nameTxt,descTxt], scaleX:1.06, scaleY:1.06, duration:100 });
         });
-      });
+        card.on('pointerout',()=>{
+          card.setFillStyle(0x020c1a,0.96); card.setStrokeStyle(2,0x334466,0.8);
+          this.tweens.add({ targets:[iconTxt,nameTxt,descTxt], scaleX:1, scaleY:1, duration:100 });
+        });
+        card.on('pointerdown',()=>{
+          this.applyRelic(relic);
+          this.playBeep('relic');
+          this.tweens.add({ targets:card, scaleX:1.08, scaleY:1.08, duration:120, yoyo:true });
+          this.time.delayedCall(380,()=>{
+            this.tweens.add({ targets:[overlay,cont], alpha:0, duration:280, ease:'Power2',
+              onComplete:()=>{ overlay.destroy(); cont.destroy(); onDone(); } });
+          });
+        });
+      }
 
-      cont.add([card, iconTxt, nameTxt, descTxt]);
+      cont.add([card, iconTxt, nameTxt, descTxt, costTxt]);
     });
 
     cont.setAlpha(0).setY(28);
@@ -2069,13 +2171,28 @@ export class GameScene extends Phaser.Scene {
   }
 
   private applyRelic(relic:RelicConfig): void {
-    if (!this.activeRelics.includes(relic.id)) this.activeRelics.push(relic.id);
+    if (this.activeRelics.includes(relic.id)) return;
+    this.activeRelics.push(relic.id);
+    this.notchesUsed += relic.notchCost;
     if (relic.id==='stone_heart') {
       this.maxHp++; this.hp = Math.min(this.hp+1, this.maxHp);
       this.updateHearts();
     }
     this.relicHud.setText(this.activeRelics.map(id=>RELICS.find(r=>r.id===id)?.icon??'').join(' '));
+    this.updateNotchHud();
     this.showFloatingText(GW/2,GH/2-20,`✨ ${relic.name}!`,0xffdd55);
+  }
+
+  private updateNotchHud(): void {
+    const total = BASE_NOTCHES + ((this.metaUpgLevels['relic_plus']??0) >= 1 ? 2 : 0);
+    const used  = this.notchesUsed;
+    const filled = '⬡'.repeat(used).substring(0, total);
+    const empty  = '⬡'.repeat(Math.max(0, total - used));
+    const display = (used > 0 ? `[color=#ff8888]${filled}[/color]` : '') + empty;
+    // Texto simple: ■ para usados, □ para libres
+    const slots = Array.from({length:total}, (_,i) => i < used ? '■' : '□').join('');
+    this.notchHud.setText(`Ranuras ${slots}  ${used}/${total}`);
+    this.notchHud.setColor(used >= total ? '#ff4444' : '#6699cc');
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2525,6 +2642,11 @@ export class GameScene extends Phaser.Scene {
       card.on('pointerdown',  ()=>{
         this.playerClass = cls.id;
         this.classBadge.setText(`${cls.icon} ${cls.name.replace('El ','')}`).setColor(cls.color);
+        // Tinte visual del jugador según clase
+        const classTints: Record<PlayerClass,number> = {
+          grammatico: 0xffcc88, vocabulista: 0x88ffcc, lector: 0xaabbff, bilingue: 0xffffdd,
+        };
+        this.playerSprite.setTint(classTints[cls.id]);
         this.playBeep('relic');
         // Bilingüe: 1 reliquia inicial
         if (cls.id === 'bilingue') {
