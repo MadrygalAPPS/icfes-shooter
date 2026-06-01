@@ -1414,9 +1414,36 @@ export class GameScene extends Phaser.Scene {
     const spriteH    = type==='boss'?134:type==='vampire'?65:type==='golem'?53:52;
     const spriteScale= type==='boss'?2.0:1.0;
 
+    // ── Portal de aparición ────────────────────────────────────────────────
+    const portalColor = type === 'boss' ? 0xff0000 : type === 'vampire' ? 0xaa00ff : 0x00ff44;
+    const portalScale = type === 'boss' ? 2.2 : 1.4;
+    const portal = this.add.ellipse(SPAWN_X, GROUND_Y - (spriteH/2), 55, 80, portalColor, 0.7)
+      .setDepth(7.8).setScale(0.1);
+    this.tweens.add({
+      targets: portal, scaleX: portalScale, scaleY: portalScale, alpha: 0,
+      duration: 600, ease: 'Back.easeOut',
+      onComplete: () => portal.destroy(),
+    });
+    // Partículas de portal
+    for (let i = 0; i < 6; i++) {
+      this.time.delayedCall(i * 40, () => {
+        const spark = this.add.ellipse(
+          SPAWN_X + Phaser.Math.Between(-30, 30),
+          GROUND_Y - Phaser.Math.Between(20, spriteH),
+          8, 8, portalColor, 0.9,
+        ).setDepth(7.9);
+        this.tweens.add({ targets: spark, y: spark.y - 50, alpha: 0, scaleX:0.2, scaleY:0.2,
+          duration: 450, ease: 'Quad.easeOut', onComplete: ()=>spark.destroy() });
+      });
+    }
+
     const sprite = this.add.sprite(SPAWN_X, GROUND_Y, firstTex)
-      .setOrigin(0.5,1).setDepth(8).setFlipX(true).setScale(spriteScale);
+      .setOrigin(0.5,1).setDepth(8).setFlipX(true).setScale(spriteScale * 0.1)
+      .setAlpha(0);
     sprite.play(animKey);
+    // Entrada con zoom-in del sprite
+    this.tweens.add({ targets:sprite, scaleX:spriteScale, scaleY:spriteScale, alpha:1,
+      duration:350, ease:'Back.easeOut' });
 
     // Tints por behavior
     if (behavior === 'turbo')      sprite.setTint(0xffee44);
@@ -1754,6 +1781,14 @@ export class GameScene extends Phaser.Scene {
     if (this.playerClass === 'lector' && this.enemy) {
       this.enemySlowLeft = 2500;
       this.showFloatingText(this.enemy.sprite.x, this.enemy.sprite.y-55, '📖 RALENTIZADO', 0x88aaff);
+    }
+
+    // ── Bonus de altura (responder desde plataforma = +1 DMG) ────────────────
+    const onPlatform = GAME_PLATFORMS.some(p =>
+      this.pX > p.x - p.w/2 && this.pX < p.x + p.w/2 && Math.abs(this.pY - p.y) < 8);
+    if (onPlatform) {
+      dmg += 1;
+      this.showFloatingText(this.pX, this.pY - 85, '⬆️ ALTURA +1', 0x44ffcc);
     }
 
     // ── Pregunta élite: ×2 daño ───────────────────────────────────────────
