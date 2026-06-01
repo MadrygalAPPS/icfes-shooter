@@ -1385,12 +1385,116 @@ export class GameScene extends Phaser.Scene {
     this.nextWaveModifier = 'normal'; // reset
     this.enemyIdx = 0;
 
+    const isBossWave = this.wave === 4 || this.wave === 7;
     const label = this.wave < WAVES.length
-      ? (this.wave === 4 || this.wave === 7 ? '⚡ BOSS !' : `WAVE ${this.wave+1}`)
+      ? (isBossWave ? '⚡ BOSS !' : `WAVE ${this.wave+1}`)
       : `WAVE ${this.wave+1}`;
     this.waveLabel.setText(label);
     this.spawnPlatformPickups();
-    this.showBanner(label, ()=>this.spawnNextEnemy());
+
+    // ── Previsualización de oleada ──────────────────────────────────────────
+    if (!isBossWave) {
+      this.showWavePreview(label, () => {
+        // Tutorial solo en oleada 1
+        if (this.wave === 0) {
+          this.showTutorialOverlay(() => this.spawnNextEnemy());
+        } else {
+          this.spawnNextEnemy();
+        }
+      });
+    } else {
+      this.showBanner(label, ()=>this.spawnNextEnemy());
+    }
+  }
+
+  // ── Wave preview (Dead Cells style) ────────────────────────────────────────
+  private showWavePreview(label: string, onDone: () => void): void {
+    // Contar tipos de enemigos
+    const counts: Partial<Record<EnemyType,number>> = {};
+    for (const t of this.enemyQueue) counts[t] = (counts[t] ?? 0) + 1;
+
+    const emojiMap: Record<EnemyType,string> = {
+      zombie:'🧟', skeleton:'💀', vampire:'🧛', golem:'🗿', boss:'👹',
+    };
+    const enemySummary = Object.entries(counts)
+      .map(([t, n]) => `${emojiMap[t as EnemyType]??'👾'}×${n}`)
+      .join('  ');
+
+    const biome = BIOMES[this.biomeIdx % BIOMES.length];
+
+    const overlay = this.add.container(0,0).setDepth(44);
+
+    const bg = this.add.rectangle(GW/2, GH - 72, GW, 68, 0x020b18, 0.93);
+    bg.setStrokeStyle(1, 0x003344, 0.7);
+    const waveT = this.add.text(GW/2, GH - 84, `${biome.icon} ${label}`, {
+      fontFamily:'monospace', fontSize:'17px', color:'#00ff88', fontStyle:'bold',
+    }).setOrigin(0.5);
+    const enemyT = this.add.text(GW/2, GH - 62, enemySummary || '???', {
+      fontFamily:'monospace', fontSize:'13px', color:'#ffdd55',
+    }).setOrigin(0.5);
+    const hint   = this.add.text(GW/2, GH - 44, '¡Derrota todos los enemigos para avanzar!', {
+      fontFamily:'monospace', fontSize:'10px', color:'#557799',
+    }).setOrigin(0.5);
+
+    overlay.add([bg, waveT, enemyT, hint]);
+    overlay.setAlpha(0);
+    this.tweens.add({ targets:overlay, alpha:1, duration:280, ease:'Power2' });
+
+    this.time.delayedCall(1800, () => {
+      this.tweens.add({ targets:overlay, alpha:0, duration:280, ease:'Power2',
+        onComplete:()=>{ overlay.destroy(); onDone(); } });
+    });
+  }
+
+  // ── Tutorial oleada 1 ───────────────────────────────────────────────────────
+  private showTutorialOverlay(onDone: () => void): void {
+    const overlay = this.add.container(0,0).setDepth(44);
+    const bg = this.add.rectangle(GW/2, GH/2, GW, GH, 0x000000, 0.78);
+    const panel = this.add.rectangle(GW/2, GH/2 - 20, 540, 260, 0x030920, 0.97);
+    panel.setStrokeStyle(2, 0x00ff88);
+
+    const title = this.add.text(GW/2, GH/2 - 128, '🎮  CONTROLES BÁSICOS', {
+      fontFamily:'monospace', fontSize:'18px', color:'#00ff88', fontStyle:'bold',
+    }).setOrigin(0.5);
+
+    const controls = [
+      '← → / A D          Mover',
+      'SPACE / W / ↑       Saltar',
+      'SHIFT               Dash',
+      'Z / X / C           Atacar (acércate al enemigo)',
+      'V                   Dodge roll (i-frames)',
+      'G                   Granada',
+      'Q                   Especial de Alma',
+      'E                   Star Move (consume granadas)',
+      'ESC                 Pausa',
+    ];
+
+    controls.forEach((line, i) => {
+      const col = i < 2 ? '#aaddff' : i < 5 ? '#ffdd88' : '#cc99ff';
+      this.add.text(GW/2 - 240, GH/2 - 96 + i * 22, line, {
+        fontFamily:'monospace', fontSize:'11px', color:col,
+      }).setOrigin(0);
+      overlay.add(this.children.getByName('') as Phaser.GameObjects.GameObject ?? this.add.text(0,0,''));
+    });
+
+    const hint = this.add.text(GW/2, GH/2 + 118, 'ESPACIO · ENTER — ¡Comenzar!', {
+      fontFamily:'monospace', fontSize:'12px', color:'#ffee44',
+    }).setOrigin(0.5);
+    this.tweens.add({ targets:hint, alpha:{from:1,to:0.3}, duration:600, yoyo:true, repeat:-1 });
+
+    overlay.add([bg, panel, title, hint]);
+
+    // Cerrar al presionar espacio/enter o después de 8s
+    const close = () => {
+      this.tweens.add({ targets:overlay, alpha:0, duration:300,
+        onComplete:()=>{ overlay.destroy(); onDone(); } });
+    };
+    this.input.keyboard?.once('keydown-SPACE', close);
+    this.input.keyboard?.once('keydown-ENTER', close);
+    this.time.delayedCall(8000, () => { if (overlay.active) close(); });
+
+    overlay.setAlpha(0);
+    this.tweens.add({ targets:overlay, alpha:1, duration:350, ease:'Power2' });
   }
 
   private spawnNextEnemy(): void {
