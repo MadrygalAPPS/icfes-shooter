@@ -329,6 +329,12 @@ export class GameScene extends Phaser.Scene {
   private projShootTimer  = 0;    // ms hasta próximo disparo
   // ── Pickups en plataformas ───────────────────────────────────────────────
   private platformPickups: PlatformPickup[] = [];
+  // ── Rage Mode (HP = 1) ──────────────────────────────────────────────────
+  private rageActive       = false;
+  private rageGlow!:       Phaser.GameObjects.Ellipse;
+  private rageTween:       Phaser.Tweens.Tween | null = null;
+  // ── Accuracy badge ──────────────────────────────────────────────────────
+  private accuracyHud!:    Phaser.GameObjects.Text;
 
   // ── Panel pregunta ───────────────────────────────────────────────────────
   private qPanel!:     Phaser.GameObjects.Container;
@@ -388,6 +394,7 @@ export class GameScene extends Phaser.Scene {
     this.notchesUsed = 0; this.paused = false; this.pauseOverlay = null;
     this.projectiles = []; this.projShootTimer = 0;
     this.platformPickups = [];
+    this.rageActive = false; this.rageTween = null;
     try { this.guilt = Math.min(3, parseInt(localStorage.getItem(GUILT_KEY)||'0',10)); } catch { this.guilt=0; }
     try { this.totalEssence = parseInt(localStorage.getItem(ESSENCE_KEY)||'0',10); } catch { this.totalEssence=0; }
     try { this.metaUpgLevels = JSON.parse(localStorage.getItem(META_UPG_KEY)||'{}') as Record<string,number>; } catch { this.metaUpgLevels={}; }
@@ -560,6 +567,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private buildPlayer(): void {
+    // Rage glow (HP=1, Hollow Knight: Fury of the Fallen) — depth 5.5
+    this.rageGlow = this.add.ellipse(this.pX, this.pY - 38, 80, 90, 0xff0000, 0)
+      .setDepth(5.5);
+
     // Aura de clase (debajo del sprite, depth 6)
     this.playerAura = this.add.ellipse(this.pX, this.pY - 2, 68, 22, 0xffffff, 0)
       .setDepth(6);
@@ -614,6 +625,11 @@ export class GameScene extends Phaser.Scene {
     this.rankBadge = this.add.text(GW/2+55, 32, '🎓 A-', {
       fontFamily:'monospace', fontSize:'11px', color:'#ff6644',
       backgroundColor:'#001422', padding:{x:6,y:2},
+    }).setOrigin(0.5).setDepth(11);
+
+    // Accuracy en tiempo real
+    this.accuracyHud = this.add.text(GW/2, 46, '', {
+      fontFamily:'monospace', fontSize:'9px', color:'#88aacc',
     }).setOrigin(0.5).setDepth(11);
 
     // Clase del personaje
@@ -1050,6 +1066,7 @@ export class GameScene extends Phaser.Scene {
     this.dashCDIcon.setPosition(this.pX, this.pY-100);
     this.playerAura.setPosition(this.pX, this.pY - 4);
     this.comboRing.setPosition(this.pX, this.pY - 38);
+    this.rageGlow.setPosition(this.pX, this.pY - 38);
 
     // ── Combo ring — brilla con combo >= 5 ──────────────────────────────────
     if (this.combo >= 10) {
@@ -1813,7 +1830,9 @@ export class GameScene extends Phaser.Scene {
   private onCorrectAnswer(q: Question): void {
     this.combo++;
     this.correctAns++;
+    // totalAns ya fue incrementado en onAnswer() — no duplicar
     this.comboShieldUsed = false;
+    this.updateAccuracyHud();
     const comboBonus = Math.floor(this.combo/3)*50;
 
     // Cargar alma
@@ -1895,6 +1914,14 @@ export class GameScene extends Phaser.Scene {
       this.showFloatingText(this.pX, this.pY - 85, '⬆️ ALTURA +1', 0x44ffcc);
     }
 
+    // ── Rage Mode: HP=1 → +2 DMG + alma doble ─────────────────────────────
+    if (this.rageActive) {
+      dmg += 2;
+      this.soul = Math.min(SOUL_MAX + this.scrollSoulMax, this.soul + SOUL_CHARGE);
+      this.updateSoulBar();
+      this.showFloatingText(this.pX, this.pY - 95, '⚡ RAGE +2', 0xff2200);
+    }
+
     // ── Pregunta élite: ×2 daño ───────────────────────────────────────────
     if (this.isEliteQuestion) {
       dmg *= 2;
@@ -1920,6 +1947,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private onWrongAnswer(): void {
+    this.updateAccuracyHud();
     // Relic: escudo de racha
     if (this.hasRelic('combo_shield') && !this.comboShieldUsed && this.combo > 0) {
       this.comboShieldUsed = true;
@@ -2482,6 +2510,62 @@ export class GameScene extends Phaser.Scene {
       h.setVisible(i < this.maxHp);
       h.setTexture(i < this.hp ? 'heart' : 'heart_empty');
     });
+    this.checkRageMode();
+  }
+
+  // ── Rage Mode: HP = 1 → +2 DMG, alma doble, glow rojo ────────────────────
+  private checkRageMode(): void {
+    const shouldRage = this.hp === 1 && this.state !== 'game_over';
+    if (shouldRage && !this.rageActive) {
+      this.rageActive = true;
+      // Activar glow rojo pulsante
+      this.rageGlow.setFillStyle(0xff0000, 0.28);
+      this.rageTween = this.tweens.add({
+        targets: this.rageGlow,
+        scaleX: {from:1, to:1.5}, scaleY: {from:1, to:1.5},
+        alpha:  {from:0.28, to:0.06},
+        duration: 500, yoyo:true, repeat:-1, ease:'Sine.easeInOut',
+      });
+      // Tinte rojo en el jugador
+      const classTints: Record<PlayerClass,number> = {
+        grammatico:0xffcc88, vocabulista:0x88ffcc, lector:0xaabbff, bilingue:0xffffdd,
+      };
+      this.playerSprite.setTint(
+        Phaser.Display.Color.Interpolate.ColorWithColor(
+          Phaser.Display.Color.ValueToColor(classTints[this.playerClass]),
+          Phaser.Display.Color.ValueToColor(0xff2200), 100, 60,
+        ).color,
+      );
+      // Anuncio
+      this.cameras.main.shake(200, 0.014);
+      const t = this.add.text(GW/2, GH/2 - 70, '⚡ ¡ÚLTIMO ALIENTO!', {
+        fontFamily:'monospace', fontSize:'20px', color:'#ff2200', fontStyle:'bold',
+        stroke:'#330000', strokeThickness:4,
+      }).setOrigin(0.5).setDepth(30).setScale(0.5);
+      this.tweens.add({
+        targets:t, scaleX:1, scaleY:1, duration:300, ease:'Back.easeOut',
+        onComplete:()=>{
+          this.tweens.add({ targets:t, alpha:0, y:t.y-40, duration:800, delay:800,
+            onComplete:()=>t.destroy() });
+        },
+      });
+    } else if (!shouldRage && this.rageActive) {
+      this.rageActive = false;
+      this.rageTween?.stop(); this.rageTween = null;
+      this.rageGlow.setFillStyle(0xff0000, 0);
+      // Restaurar tinte de clase
+      const classTints: Record<PlayerClass,number> = {
+        grammatico:0xffcc88, vocabulista:0x88ffcc, lector:0xaabbff, bilingue:0xffffdd,
+      };
+      this.playerSprite.setTint(classTints[this.playerClass]);
+    }
+  }
+
+  private updateAccuracyHud(): void {
+    if (this.totalAns === 0) { this.accuracyHud.setText(''); return; }
+    const pct = Math.round((this.correctAns / this.totalAns) * 100);
+    const col = pct >= 80 ? '#44ff88' : pct >= 60 ? '#ffee44' : '#ff6644';
+    this.accuracyHud.setText(`🎯 ${pct}%  (${this.correctAns}/${this.totalAns})`).setColor(col);
   }
 
   private addScore(pts:number): void {
