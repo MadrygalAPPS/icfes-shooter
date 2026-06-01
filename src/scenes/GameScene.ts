@@ -249,6 +249,7 @@ export class GameScene extends Phaser.Scene {
   private killCount    = 0;
   private killStreak   = 0;   // muertes seguidas rápidas (Streets of Rage feel)
   private killStreakTimer = 0; // ms hasta que se resetea la racha
+  private maxKillStreak = 0;  // pico de racha en la run
   private activeRelics: string[] = [];
   private comboShieldUsed = false;
   private bossPhase    = 0;
@@ -383,7 +384,7 @@ export class GameScene extends Phaser.Scene {
     this.score    = 0; this.combo     = 0;
     this.hasShield= false; this.soul  = 0;
     this.correctAns = 0;  this.totalAns = 0;
-    this.killCount  = 0;  this.bossPhase= 0; this.killStreak = 0; this.killStreakTimer = 0;
+    this.killCount  = 0;  this.bossPhase= 0; this.killStreak = 0; this.killStreakTimer = 0; this.maxKillStreak = 0;
     this.activeRelics = []; this.comboShieldUsed = false;
     this.runEssence = 0; this.enemySlowLeft = 0;
     this.nextWaveModifier = 'normal'; this.isEliteQuestion = false;
@@ -2233,6 +2234,7 @@ export class GameScene extends Phaser.Scene {
     // ── Kill streak (Streets of Rage) ─────────────────────────────────────
     this.killStreak++;
     this.killStreakTimer = 4500;  // resetea si no mata en 4.5s
+    if (this.killStreak > this.maxKillStreak) this.maxKillStreak = this.killStreak;
     if (this.killStreak >= 3) {
       const streakMsgs = ['','','','🔥 TRIPLE KILL!','💥 QUADRA!','⭐ KILLING SPREE!','🌟 RAMPAGE!'];
       const msg = this.killStreak < streakMsgs.length
@@ -2962,10 +2964,29 @@ export class GameScene extends Phaser.Scene {
   // 🏁  FIN DE JUEGO
   // ═══════════════════════════════════════════════════════════════════════════
 
+  private buildRunStats(win: boolean) {
+    const hi = parseInt(localStorage.getItem('icfes_shooter_hi')||'0',10);
+    const accuracy = this.totalAns > 0
+      ? Math.round((this.correctAns / this.totalAns) * 100) : 0;
+    return {
+      score:       this.score,
+      hi,
+      wave:        win ? WAVES.length : this.wave + 1,
+      win,
+      essence:     this.runEssence,
+      kills:       this.killCount,
+      accuracy,
+      maxStreak:   this.maxKillStreak,
+      weapon:      this.currentWeapon ?? '',
+      scrollAtk:   this.scrollAtk,
+      playerClass: this.playerClass,
+      relicCount:  this.activeRelics.length,
+    };
+  }
+
   private doGameOver(): void {
     this.state='game_over'; this.timerEvent?.remove(); this.enemy?.bob.stop();
     this.saveEssence();
-    // Culpa: acumular al morir (máx 3)
     const newGuilt = Math.min(3, this.guilt + 1);
     try { localStorage.setItem(GUILT_KEY, String(newGuilt)); } catch { /* noop */ }
     this.scene.stop('CRT');
@@ -2973,7 +2994,7 @@ export class GameScene extends Phaser.Scene {
     this.time.delayedCall(600,()=>{
       this.cameras.main.fadeOut(600,0,0,0);
       this.time.delayedCall(700,()=>
-        this.scene.start('GameOver',{score:this.score,wave:this.wave+1,win:false,essence:this.runEssence}));
+        this.scene.start('GameOver', this.buildRunStats(false)));
     });
   }
 
@@ -2981,12 +3002,11 @@ export class GameScene extends Phaser.Scene {
     this.state='game_over';
     this.addRunEssence(25);
     this.saveEssence();
-    // Victoria limpia culpa acumulada
     try { localStorage.setItem(GUILT_KEY,'0'); } catch { /* noop */ }
     this.scene.stop('CRT');
     this.cameras.main.fadeOut(800,255,255,200);
     this.time.delayedCall(900,()=>
-      this.scene.start('GameOver',{score:this.score,wave:WAVES.length,win:true,essence:this.runEssence}));
+      this.scene.start('GameOver', this.buildRunStats(true)));
   }
 
   private applyScroll(scroll: ScrollDrop, x: number, y: number): void {
