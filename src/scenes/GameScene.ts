@@ -95,6 +95,17 @@ interface EnemyProjectile {
   dmg: number;
 }
 
+// ── Pickups de plataforma ─────────────────────────────────────────────────────
+type PickupType = 'hp' | 'soul' | 'essence' | 'grenade';
+interface PlatformPickup {
+  type: PickupType;
+  x: number; y: number;
+  visual: Phaser.GameObjects.Text;
+  glow: Phaser.GameObjects.Ellipse;
+  bobTween: Phaser.Tweens.Tween;
+  collected: boolean;
+}
+
 // ── Biomas ────────────────────────────────────────────────────────────────────
 interface BiomeConfig {
   name: string; icon: string; bgTint: number;
@@ -314,6 +325,8 @@ export class GameScene extends Phaser.Scene {
   // ── Proyectiles enemigos ─────────────────────────────────────────────────
   private projectiles:    EnemyProjectile[] = [];
   private projShootTimer  = 0;    // ms hasta próximo disparo
+  // ── Pickups en plataformas ───────────────────────────────────────────────
+  private platformPickups: PlatformPickup[] = [];
 
   // ── Panel pregunta ───────────────────────────────────────────────────────
   private qPanel!:     Phaser.GameObjects.Container;
@@ -372,6 +385,7 @@ export class GameScene extends Phaser.Scene {
     this.obstacleHurtLeft = 0; this.acidDmgAccum = 0;
     this.notchesUsed = 0; this.paused = false; this.pauseOverlay = null;
     this.projectiles = []; this.projShootTimer = 0;
+    this.platformPickups = [];
     try { this.guilt = Math.min(3, parseInt(localStorage.getItem(GUILT_KEY)||'0',10)); } catch { this.guilt=0; }
     try { this.totalEssence = parseInt(localStorage.getItem(ESSENCE_KEY)||'0',10); } catch { this.totalEssence=0; }
     try { this.metaUpgLevels = JSON.parse(localStorage.getItem(META_UPG_KEY)||'{}') as Record<string,number>; } catch { this.metaUpgLevels={}; }
@@ -423,6 +437,7 @@ export class GameScene extends Phaser.Scene {
     this.updatePlayer(dt);
     this.updateEnemy(dt);
     this.updateProjectiles(dt);
+    this.updatePlatformPickups();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1262,6 +1277,89 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // 🎁  PICKUPS DE PLATAFORMA
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private spawnPlatformPickups(): void {
+    // Limpiar pickups anteriores
+    for (const p of this.platformPickups) {
+      if (!p.collected) { p.visual.destroy(); p.glow.destroy(); p.bobTween.stop(); }
+    }
+    this.platformPickups = [];
+
+    // Spawn un pickup por plataforma (~60% de probabilidad)
+    const types: PickupType[] = ['hp','soul','essence','grenade'];
+    const weights = [0.35, 0.35, 0.20, 0.10];
+
+    for (const plat of GAME_PLATFORMS) {
+      if (Math.random() > 0.65) continue; // 65% chance de spawn
+
+      // Elegir tipo por peso
+      const roll = Math.random();
+      let acc = 0, type: PickupType = 'soul';
+      for (let i = 0; i < types.length; i++) {
+        acc += weights[i];
+        if (roll <= acc) { type = types[i]; break; }
+      }
+
+      const emojis: Record<PickupType,string> = { hp:'❤️', soul:'🔷', essence:'✨', grenade:'💣' };
+      const colors: Record<PickupType,number> = { hp:0xff4466, soul:0x4488ff, essence:0xaaddff, grenade:0xff8800 };
+
+      const py = plat.y - 28;
+      const glow = this.add.ellipse(plat.x, py+14, 36, 14, colors[type], 0.3).setDepth(7.5);
+      const visual = this.add.text(plat.x, py, emojis[type], {fontSize:'20px'})
+        .setOrigin(0.5).setDepth(7.6);
+
+      const bobTween = this.tweens.add({
+        targets: visual, y: py - 8, duration: 700 + Math.random()*300,
+        yoyo:true, repeat:-1, ease:'Sine.easeInOut',
+      });
+
+      this.platformPickups.push({ type, x:plat.x, y:py, visual, glow, bobTween, collected:false });
+    }
+  }
+
+  private updatePlatformPickups(): void {
+    for (const p of this.platformPickups) {
+      if (p.collected) continue;
+      // Colisión con jugador
+      if (Math.abs(this.pX - p.x) < 28 && Math.abs(this.pY - p.y) < 30) {
+        p.collected = true;
+        p.bobTween.stop();
+        p.visual.destroy(); p.glow.destroy();
+
+        // Aplicar efecto del pickup
+        switch (p.type) {
+          case 'hp':
+            if (this.hp < this.maxHp) {
+              this.hp++; this.updateHearts();
+              this.showFloatingText(this.pX, this.pY-70, '❤️ +1 HP', 0xff4466);
+            } else {
+              this.addScore(150);
+              this.showFloatingText(this.pX, this.pY-70, '❤️ +150 pts', 0xff4466);
+            }
+            break;
+          case 'soul':
+            this.soul = Math.min(SOUL_MAX + this.scrollSoulMax, this.soul + 30);
+            this.updateSoulBar();
+            this.showFloatingText(this.pX, this.pY-70, '🔷 +30 Alma', 0x4488ff);
+            break;
+          case 'essence':
+            this.addRunEssence(8);
+            this.showFloatingText(this.pX, this.pY-70, '✨ +8 Esencia', 0xaaddff);
+            break;
+          case 'grenade':
+            this.grenades = Math.min(this.grenades + 1, 5);
+            this.grenadeIcon.setText(`💣 ${this.grenades}`);
+            this.showFloatingText(this.pX, this.pY-70, '💣 +1 Granada', 0xff8800);
+            break;
+        }
+        this.playBeep('relic');
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // 🌊  OLAS
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1284,6 +1382,7 @@ export class GameScene extends Phaser.Scene {
       ? (this.wave === 4 || this.wave === 7 ? '⚡ BOSS !' : `WAVE ${this.wave+1}`)
       : `WAVE ${this.wave+1}`;
     this.waveLabel.setText(label);
+    this.spawnPlatformPickups();
     this.showBanner(label, ()=>this.spawnNextEnemy());
   }
 
